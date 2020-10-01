@@ -38,7 +38,7 @@ static struct debug_map* _Atomic g_debug_map = NULL;
  * time, we need to prevent concurrent modification. */
 static spinlock_t g_debug_map_lock = INIT_SPINLOCK_UNLOCKED;
 
-static struct debug_map* debug_map_alloc(const char* file_name, void* text_addr) {
+static struct debug_map* debug_map_alloc(const char* file_name, void* load_addr) {
     struct debug_map* map;
 
     if (!(map = malloc(sizeof(*map))))
@@ -49,7 +49,7 @@ static struct debug_map* debug_map_alloc(const char* file_name, void* text_addr)
         return NULL;
     }
 
-    map->text_addr = text_addr;
+    map->load_addr = load_addr;
     map->section = NULL;
     map->next = NULL;
     return map;
@@ -96,7 +96,7 @@ static void debug_map_add(struct debug_map* map) {
     ocall_update_debugger(&g_debug_map);
 }
 
-static bool debug_map_del(const char* file_name) {
+static bool debug_map_del(void* load_addr) {
     assert(g_debug_map);
 
     spinlock_lock(&g_debug_map_lock);
@@ -104,7 +104,7 @@ static bool debug_map_del(const char* file_name) {
     struct debug_map* prev = NULL;
     struct debug_map* map = g_debug_map;
     while (map) {
-        if (strcmp(map->file_name, file_name) == 0)
+        if (map->load_addr == load_addr)
             break;
         prev = map;
         map = map->next;
@@ -180,17 +180,7 @@ void _DkDebugAddMap(struct link_map* map) {
 
     ocall_close(fd);
 
-    ElfW(Addr) text_addr = 0;
-    for (ElfW(Shdr)* s = shdr; s < shdrend; s++)
-        if (!strcmp_static(shstrtab + s->sh_name, ".text")) {
-            text_addr = map->l_addr + s->sh_addr;
-            break;
-        }
-
-    if (!text_addr)
-        return;
-
-    struct debug_map* debug_map = debug_map_alloc(map->l_name, (void*)text_addr);
+    struct debug_map* debug_map = debug_map_alloc(map->l_name, (void*)map->l_addr);
     if (!debug_map) {
         SGX_DBG(DBG_E, "_DkDebugAddMap: error allocating new map");
         return;
@@ -198,8 +188,6 @@ void _DkDebugAddMap(struct link_map* map) {
 
     for (ElfW(Shdr)* s = shdr; s < shdrend; s++) {
         if (!s->sh_name || !s->sh_addr)
-            continue;
-        if (!strcmp_static(shstrtab + s->sh_name, ".text"))
             continue;
         if (s->sh_type == SHT_NULL)
             continue;
@@ -218,7 +206,7 @@ void _DkDebugAddMap(struct link_map* map) {
 }
 
 void _DkDebugDelMap(struct link_map* map) {
-    debug_map_del(map->l_name);
+    debug_map_del((void*)map->l_addr);
 }
 
 extern void* g_section_text;
