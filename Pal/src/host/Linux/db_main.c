@@ -105,22 +105,14 @@ void _DkGetAvailableUserAddressRange(PAL_PTR* start, PAL_PTR* end) {
     void* end_addr = (void*)ALLOC_ALIGN_DOWN_PTR(TEXT_START);
     void* start_addr = (void*)USER_ADDRESS_LOWEST;
 
-    assert(IS_ALLOC_ALIGNED_PTR(start_addr) && IS_ALLOC_ALIGNED_PTR(end_addr));
-
-    while (1) {
-        if (start_addr >= end_addr)
-            INIT_FAIL(PAL_ERROR_NOMEM, "no user memory available");
-
-        void* mem = (void*)ARCH_MMAP(start_addr, g_pal_state.alloc_align, PROT_NONE,
-                                     MAP_FIXED | MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-        if (!IS_ERR_P(mem)) {
-            INLINE_SYSCALL(munmap, 2, mem, g_pal_state.alloc_align);
-            if (mem == start_addr)
-                break;
-        }
-
-        start_addr = (void*)((unsigned long)start_addr << 1);
+    if (TEXT_START == (void*)0x108000) {
+        printf("Running under Valgrind\n");
+        start_addr = (void*)ALLOC_ALIGN_UP_PTR((void*)0x2000000000);
+        end_addr = (void*)ALLOC_ALIGN_DOWN_PTR((void*)0x50000000000);
     }
+
+    assert(IS_ALLOC_ALIGNED_PTR(start_addr) && IS_ALLOC_ALIGNED_PTR(end_addr));
+    printf("%p .. %p\n", start_addr, end_addr);
 
     *end   = (PAL_PTR)end_addr;
     *start = (PAL_PTR)start_addr;

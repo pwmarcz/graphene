@@ -946,6 +946,7 @@ int bkeep_mprotect(void* addr, size_t length, int prot, bool is_internal) {
 int bkeep_mmap_any_in_range(void* _bottom_addr, void* _top_addr, size_t length, int prot, int flags,
                             struct shim_handle* file, off_t offset, const char* comment,
                             void** ret_val_ptr) {
+    debug("bkeep_mmap_any_in_range %p %p %llx\n", _bottom_addr, _top_addr, length);
     assert(_bottom_addr < _top_addr);
 
     if (!length || !IS_ALLOC_ALIGNED(length)) {
@@ -1008,6 +1009,7 @@ int bkeep_mmap_any_in_range(void* _bottom_addr, void* _top_addr, size_t length, 
 
     if (!(bottom_addr <= max_addr && max_addr - bottom_addr >= length)) {
         ret = -ENOMEM;
+        debug("ENOMEM\n");
         goto out;
     }
 
