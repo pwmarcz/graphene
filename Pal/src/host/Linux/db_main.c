@@ -105,11 +105,8 @@ void _DkGetAvailableUserAddressRange(PAL_PTR* start, PAL_PTR* end) {
     void* end_addr = (void*)ALLOC_ALIGN_DOWN_PTR(TEXT_START);
     void* start_addr = (void*)USER_ADDRESS_LOWEST;
 
-    if (TEXT_START == (void*)0x108000) {
-        printf("Running under Valgrind\n");
-        start_addr = (void*)ALLOC_ALIGN_UP_PTR((void*)0x2000000000);
-        end_addr = (void*)ALLOC_ALIGN_DOWN_PTR((void*)0x50000000000);
-    }
+    start_addr = (void*)ALLOC_ALIGN_UP_PTR((void*)0x2000000000);
+    end_addr = (void*)ALLOC_ALIGN_DOWN_PTR((void*)0x50000000000);
 
     assert(IS_ALLOC_ALIGNED_PTR(start_addr) && IS_ALLOC_ALIGNED_PTR(end_addr));
     printf("%p .. %p\n", start_addr, end_addr);
