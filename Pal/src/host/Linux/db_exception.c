@@ -155,6 +155,9 @@ static void handle_sync_signal(int signum, siginfo_t* info, struct ucontext* uc)
     printf("*** Unexpected %s occurred inside PAL (PID = %ld, TID = %ld, RIP = +0x%08lx)! ***\n",
            name, INLINE_SYSCALL(getpid, 0), INLINE_SYSCALL(gettid, 0), rip - (uintptr_t)TEXT_START);
 
+    pid_t pid = INLINE_SYSCALL(getpid, 0);
+    INLINE_SYSCALL(kill, 2, pid, SIGSTOP);
+
     _DkProcessExit(1);
     return;
 }
