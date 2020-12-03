@@ -22,7 +22,7 @@
 #include "spinlock.h"
 #include "uthash.h"
 
-// Capture up to 2 stack frames (saved IP + saved return address)
+// Capture up to 2 addresses (saved IP, saved return address)
 #define NUM_IPS 2
 
 #define NSEC_IN_SEC 1000000000
@@ -101,7 +101,17 @@ static int get_sgx_ips(void* tcs, uint64_t* ips) {
 
     ips[ret++] = gpr.rip;
 
-    if (is_in_enclave(gpr.rsp, 16) && is_in_enclave(gpr.rbp, 16) && gpr.rsp <= gpr.rbp) {
+    /*
+     * Try to determine the return addresses, assuming the code uses RBP as frame pointer. Perform the
+     * following sanity checks to reduce false positives:
+     * - RBP and RSP both in enclave, RSP <= RBP
+     * - RBP aligned to 16 bytes
+     */
+    if (is_in_enclave(gpr.rsp, 16) &&
+        is_in_enclave(gpr.rbp, 16) &&
+        gpr.rsp <= gpr.rbp &&
+        gpr.rbp % 16 == 0) {
+
         void* prev_addr = (void*)(gpr.rbp + 8);
         uint64_t prev_ip;
         if (debug_read(&prev_ip, prev_addr, sizeof(prev_ip)) < 0)
