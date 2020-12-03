@@ -536,6 +536,17 @@ measuring the value of instruction pointer on each asynchronous enclave exit
 as page faults. While we attempt to measure time (and not only count
 occurences), the results might be inaccurate.
 
+Displaying caller information
+"""""""""""""""""""""""""""""
+
+The SGX profiler also collects information about callers of a given function (a
+2-node call graph). To view this information, use ``profile-report -c``.
+
+*Note*: The caller information is gathered from frame pointers (similar to
+``perf --call-graph fp``). It should work reasonably well inside Graphene, but
+it will not show callers if a binary has been compiled without frame pointers,
+and might provide inaccurate information.
+
 Other useful tools for profiling
 --------------------------------
 
