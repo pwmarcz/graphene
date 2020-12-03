@@ -22,13 +22,16 @@
 #include "spinlock.h"
 #include "uthash.h"
 
+// Capture up to 2 stack frames (saved IP + saved return address)
+#define NUM_IPS 2
+
 #define NSEC_IN_SEC 1000000000
 
 // Assume Linux scheduler will normally interrupt the enclave each 4 ms, or 250 times per second
 #define MAX_DT (NSEC_IN_SEC / 250)
 
 struct counter {
-    void* ip;
+    uint64_t ips[NUM_IPS];
     uint64_t count;
     UT_hash_handle hh;
 };
@@ -72,24 +75,45 @@ static int debug_read(void* dest, void* addr, size_t size) {
     return 0;
 }
 
-static void* get_sgx_ip(void* tcs) {
+static inline bool is_in_enclave(uintptr_t addr, size_t size) {
+    return g_pal_enclave.baseaddr <= addr
+        && addr + size < g_pal_enclave.baseaddr + g_pal_enclave.size;
+}
+
+static int get_sgx_ips(void* tcs, uint64_t* ips) {
+    int ret = 0;
+
     uint64_t ossa;
     uint32_t cssa;
     if (debug_read(&ossa, tcs + 16, sizeof(ossa)) < 0)
-        return NULL;
+        return ret;
     if (debug_read(&cssa, tcs + 24, sizeof(cssa)) < 0)
-        return NULL;
+        return ret;
 
     void* gpr_addr = (void*)(
         g_pal_enclave.baseaddr
         + ossa + cssa * g_pal_enclave.ssaframesize
         - sizeof(sgx_pal_gpr_t));
 
-    uint64_t rip;
-    if (debug_read(&rip, gpr_addr + offsetof(sgx_pal_gpr_t, rip), sizeof(rip)) < 0)
-        return NULL;
+    sgx_pal_gpr_t gpr;
+    if (debug_read(&gpr, gpr_addr, sizeof(gpr)) < 0)
+        return ret;
 
-    return (void*)rip;
+    ips[ret++] = gpr.rip;
+
+    if (is_in_enclave(gpr.rsp, 16) && is_in_enclave(gpr.rbp, 16) && gpr.rsp <= gpr.rbp) {
+        void* prev_addr = (void*)(gpr.rbp + 8);
+        uint64_t prev_ip;
+        if (debug_read(&prev_ip, prev_addr, sizeof(prev_ip)) < 0)
+            return ret;
+
+        if (!is_in_enclave(prev_ip, 1))
+            return ret;
+
+        ips[ret++] = prev_ip;
+    }
+
+    return ret;
 }
 
 static int write_report(int fd) {
@@ -99,7 +123,10 @@ static int write_report(int fd) {
     struct counter* counter;
     struct counter* tmp;
     HASH_ITER(hh, g_counters, counter, tmp) {
-        pal_fdprintf(fd, "counter %p %lu\n", counter->ip, counter->count);
+        pal_fdprintf(fd, "counter ");
+        for (int i = 0; i < NUM_IPS; i++)
+            pal_fdprintf(fd, "0x%lx ", counter->ips[i]);
+        pal_fdprintf(fd, "%lu\n", counter->count);
         HASH_DEL(g_counters, counter);
         free(counter);
     }
@@ -155,7 +182,7 @@ int sgx_profile_init(bool all) {
  * Shut down profiling and write out data to a file.
 
  * The file will contain two kinds of lines:
- * - "counter 0x<addr> <count>": counter value
+ * - "counter 0x<addr> 0x<addr> <count>": counter value
  * - "file 0x<addr> <path>": address of shared object loaded inside enclave
  */
 void sgx_profile_finish(void) {
@@ -206,9 +233,9 @@ void sgx_profile_sample(void* tcs) {
     if (!g_profile_enabled)
         return;
 
-    // Check current IP in enclave
-    void* ip = get_sgx_ip(tcs);
-    if (!ip)
+    // Check current IPs in enclave
+    uint64_t ips[NUM_IPS] = {0};
+    if (get_sgx_ips(tcs, &ips[0]) == 0)
         return;
 
     // Check current CPU time
@@ -240,7 +267,7 @@ void sgx_profile_sample(void* tcs) {
         spinlock_lock(&g_profile_lock);
 
         struct counter* counter;
-        HASH_FIND_PTR(g_counters, &ip, counter);
+        HASH_FIND(hh, g_counters, &ips, sizeof(ips), counter);
         if (counter) {
             counter->count += dt;
         } else {
@@ -251,9 +278,10 @@ void sgx_profile_sample(void* tcs) {
                 return;
             }
 
-            counter->ip = ip;
+            for (int i = 0; i < NUM_IPS; i++)
+                counter->ips[i] = ips[i];
             counter->count = dt;
-            HASH_ADD_PTR(g_counters, ip, counter);
+            HASH_ADD(hh, g_counters, ips, sizeof(counter->ips), counter);
         }
 
         spinlock_unlock(&g_profile_lock);
