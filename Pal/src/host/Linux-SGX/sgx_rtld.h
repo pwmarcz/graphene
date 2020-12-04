@@ -18,13 +18,15 @@
 struct debug_map {
     char* file_name;
     void* load_addr;
+    void* map_start;
+    void* map_end;
 
     struct debug_map* _Atomic next;
 };
 
 extern struct debug_map* _Atomic g_debug_map;
 
-int sgx_debug_add_map(const char* file_name, void* load_addr);
+int sgx_debug_add_map(const char* file_name, void* load_addr, void* map_start, void* map_end);
 int sgx_debug_del_map(void* load_addr);
 
 #endif /* SGX_RTLD_H */

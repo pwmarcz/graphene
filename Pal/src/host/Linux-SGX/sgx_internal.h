@@ -147,4 +147,8 @@ void sgx_profile_finish(void);
 void sgx_profile_sample(void* tcs);
 #endif
 
+#ifdef DEBUG
+void print_backtrace(PAL_CONTEXT* uc);
+#endif
+
 #endif

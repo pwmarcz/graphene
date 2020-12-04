@@ -69,9 +69,9 @@ SECTIONS
     g_section_bss = .;
     *(.bss)
     *(COMMON)
+
   }
   __data_end = .;
-
   . = DATA_SEGMENT_END(.);
+  pal_end_addr = .;
 }
-

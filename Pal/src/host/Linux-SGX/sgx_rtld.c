@@ -16,7 +16,8 @@ struct debug_map* _Atomic g_debug_map = NULL;
  * time, we need to prevent concurrent modification. */
 static spinlock_t g_debug_map_lock = INIT_SPINLOCK_UNLOCKED;
 
-static struct debug_map* debug_map_alloc(const char* file_name, void* load_addr) {
+static struct debug_map* debug_map_alloc(const char* file_name, void* load_addr,
+                                         void* map_start, void* map_end) {
     struct debug_map* map;
 
     if (!(map = malloc(sizeof(*map))))
@@ -28,6 +29,8 @@ static struct debug_map* debug_map_alloc(const char* file_name, void* load_addr)
     }
 
     map->load_addr = load_addr;
+    map->map_start = map_start;
+    map->map_end = map_end;
     map->next = NULL;
     return map;
 }
@@ -37,8 +40,8 @@ static void debug_map_free(struct debug_map* map) {
     free(map);
 }
 
-int sgx_debug_add_map(const char* file_name, void* load_addr) {
-    struct debug_map* map = debug_map_alloc(file_name, load_addr);
+int sgx_debug_add_map(const char* file_name, void* load_addr, void* map_start, void* map_end) {
+    struct debug_map* map = debug_map_alloc(file_name, load_addr, map_start, map_end);
 
     if (!map)
         return -ENOMEM;

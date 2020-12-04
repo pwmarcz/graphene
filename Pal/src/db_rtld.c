@@ -899,14 +899,16 @@ void DkDebugAttachBinary(PAL_STR uri, PAL_PTR start_addr) {
 
     ElfW(Phdr)* phdr = (void*)((char*)start_addr + header->e_phoff);
     const ElfW(Phdr)* ph;
+    bool first = true;
     ElfW(Addr) map_start = 0, map_end = 0;
 
     for (ph = phdr; ph < &phdr[l->l_phnum]; ++ph)
-        if (ph->p_type == PT_PHDR) {
-            if (!map_start || ph->p_vaddr < map_start)
+        if (ph->p_type == PT_LOAD) {
+            if (first || ph->p_vaddr < map_start)
                 map_start = ALLOC_ALIGN_DOWN(ph->p_vaddr);
-            if (!map_end || ph->p_vaddr + ph->p_memsz > map_end)
+            if (first || ph->p_vaddr + ph->p_memsz > map_end)
                 map_end = ALLOC_ALIGN_UP(ph->p_vaddr + ph->p_memsz);
+            first = false;
         }
 
     l->l_addr    = l->l_map_start - map_start;

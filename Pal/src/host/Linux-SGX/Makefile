@@ -70,6 +70,7 @@ enclave-asm-objs = enclave_entry.o
 
 urts-objs = \
 	clone-x86_64.o \
+    sgx_backtrace.o \
 	sgx_enclave.o \
 	sgx_exception.o \
 	sgx_framework.o \
@@ -121,7 +122,7 @@ $(commons_objs_encl) $(commons_objs_urts): %.o: ../Linux-common/%.c
 	$(call cmd,cpp_s_S)
 
 CFLAGS-pal-sgx = -Wl,-z,relro,-z,now -pie
-LDLIBS-pal-sgx += -lprotobuf-c
+LDLIBS-pal-sgx += -lprotobuf-c -ldw
 pal-sgx: $(urts-objs) $(urts-asm-objs) $(graphene_lib)
 	$(call cmd,cmulti)
 

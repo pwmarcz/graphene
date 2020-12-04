@@ -285,6 +285,8 @@ typedef struct {
 typedef struct {
     const char* ms_file_name;
     void* ms_load_addr;
+    void* ms_map_start;
+    void* ms_map_end;
 } ms_ocall_debug_add_map_t;
 
 typedef struct {

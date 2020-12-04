@@ -666,7 +666,7 @@ static long sgx_ocall_debug_add_map(void* pms) {
     ms_ocall_debug_add_map_t* ms = (ms_ocall_debug_add_map_t*)pms;
     ODEBUG(OCALL_DEBUG_ADD_MAP, ms);
 
-    return sgx_debug_add_map(ms->ms_file_name, ms->ms_load_addr);
+    return sgx_debug_add_map(ms->ms_file_name, ms->ms_load_addr, ms->ms_map_start, ms->ms_map_end);
 }
 
 static long sgx_ocall_debug_del_map(void* pms) {

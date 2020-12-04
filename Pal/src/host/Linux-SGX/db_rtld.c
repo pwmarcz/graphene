@@ -9,7 +9,8 @@
 #include "pal_rtld.h"
 
 void _DkDebugAddMap(struct link_map* map) {
-    int ret = ocall_debug_add_map(map->l_name, (void*)map->l_addr);
+    int ret = ocall_debug_add_map(map->l_name, (void*)map->l_addr,
+                                  (void*)map->l_map_start, (void*)map->l_map_end);
     if (ret < 0)
         SGX_DBG(DBG_E, "_DkDebugAddMap: ocall_debug_add_map failed: %d\n", ret);
 }
@@ -19,6 +20,9 @@ void _DkDebugDelMap(struct link_map* map) {
     if (ret < 0)
         SGX_DBG(DBG_E, "_DkDebugAddMap: ocall_debug_del_map failed: %d\n", ret);
 }
+
+extern void* pal_start_addr;
+extern void* pal_end_addr;
 
 void setup_pal_map(struct link_map* pal_map) {
     const ElfW(Ehdr)* header = (void*)pal_map->l_addr;
@@ -33,7 +37,8 @@ void setup_pal_map(struct link_map* pal_map) {
     pal_map->l_prev = pal_map->l_next = NULL;
     g_loaded_maps = pal_map;
 
-    int ret = ocall_debug_add_map(pal_map->l_name, (void*)pal_map->l_addr);
+    int ret = ocall_debug_add_map(pal_map->l_name, (void*)pal_map->l_addr,
+                                  (void*)&pal_start_addr, (void*)&pal_end_addr);
     if (ret < 0)
         SGX_DBG(DBG_E, "setup_pal_map: ocall_debug_add_map failed: %d\n", ret);
 }

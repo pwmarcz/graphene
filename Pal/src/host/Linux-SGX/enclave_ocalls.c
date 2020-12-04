@@ -1363,7 +1363,7 @@ int ocall_delete(const char* pathname) {
     return retval;
 }
 
-int ocall_debug_add_map(const char* file_name, void* load_addr) {
+int ocall_debug_add_map(const char* file_name, void* load_addr, void* map_start, void* map_end) {
     int retval = 0;
     int len = strlen(file_name) + 1;
     ms_ocall_debug_add_map_t* ms;
@@ -1383,6 +1383,8 @@ int ocall_debug_add_map(const char* file_name, void* load_addr) {
 
     WRITE_ONCE(ms->ms_file_name, untrusted_file_name);
     WRITE_ONCE(ms->ms_load_addr, load_addr);
+    WRITE_ONCE(ms->ms_map_start, map_start);
+    WRITE_ONCE(ms->ms_map_end, map_end);
 
     retval = sgx_exitless_ocall(OCALL_DEBUG_ADD_MAP, ms);
 

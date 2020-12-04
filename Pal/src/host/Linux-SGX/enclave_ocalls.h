@@ -92,7 +92,7 @@ int ocall_rename(const char* oldpath, const char* newpath);
 
 int ocall_delete(const char* pathname);
 
-int ocall_debug_add_map(const char* file_name, void* load_addr);
+int ocall_debug_add_map(const char* file_name, void* load_addr, void* map_start, void* map_end);
 
 int ocall_debug_del_map(void* load_addr);
 
