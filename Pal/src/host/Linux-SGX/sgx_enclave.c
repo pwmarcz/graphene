@@ -662,17 +662,18 @@ static long sgx_ocall_eventfd(void* pms) {
     return ret;
 }
 
-static long sgx_ocall_update_debugger(void* pms) {
-    ms_ocall_update_debugger_t* ms = (ms_ocall_update_debugger_t*)pms;
-    ODEBUG(OCALL_UPDATE_DEBUGGER, ms);
+static long sgx_ocall_debug_add_map(void* pms) {
+    ms_ocall_debug_add_map_t* ms = (ms_ocall_debug_add_map_t*)pms;
+    ODEBUG(OCALL_DEBUG_ADD_MAP, ms);
 
-#ifdef DEBUG
-    g_pal_enclave.debug_map = ms->ms_debug_map;
-    update_debugger();
-#else
-    __UNUSED(ms);
-#endif
-    return 0;
+    return sgx_debug_add_map(ms->ms_file_name, ms->ms_load_addr);
+}
+
+static long sgx_ocall_debug_del_map(void* pms) {
+    ms_ocall_debug_del_map_t* ms = (ms_ocall_debug_del_map_t*)pms;
+    ODEBUG(OCALL_DEBUG_DEL_MAP, ms);
+
+    return sgx_debug_del_map(ms->ms_load_addr);
 }
 
 static long sgx_ocall_get_quote(void* pms) {
@@ -720,7 +721,8 @@ sgx_ocall_fn_t ocall_table[OCALL_NR] = {
     [OCALL_POLL]             = sgx_ocall_poll,
     [OCALL_RENAME]           = sgx_ocall_rename,
     [OCALL_DELETE]           = sgx_ocall_delete,
-    [OCALL_UPDATE_DEBUGGER]  = sgx_ocall_update_debugger,
+    [OCALL_DEBUG_ADD_MAP]    = sgx_ocall_debug_add_map,
+    [OCALL_DEBUG_DEL_MAP]    = sgx_ocall_debug_del_map,
     [OCALL_EVENTFD]          = sgx_ocall_eventfd,
     [OCALL_GET_QUOTE]        = sgx_ocall_get_quote,
 };

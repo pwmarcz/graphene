@@ -60,7 +60,8 @@ enum {
     OCALL_POLL,
     OCALL_RENAME,
     OCALL_DELETE,
-    OCALL_UPDATE_DEBUGGER,
+    OCALL_DEBUG_ADD_MAP,
+    OCALL_DEBUG_DEL_MAP,
     OCALL_EVENTFD,
     OCALL_GET_QUOTE,
     OCALL_NR,
@@ -282,8 +283,13 @@ typedef struct {
 } ms_ocall_delete_t;
 
 typedef struct {
-    struct debug_map* _Atomic* ms_debug_map;
-} ms_ocall_update_debugger_t;
+    const char* ms_file_name;
+    void* ms_load_addr;
+} ms_ocall_debug_add_map_t;
+
+typedef struct {
+    void* ms_load_addr;
+} ms_ocall_debug_del_map_t;
 
 typedef struct {
     unsigned int ms_initval;

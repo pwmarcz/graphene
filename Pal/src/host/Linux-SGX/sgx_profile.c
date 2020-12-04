@@ -93,8 +93,6 @@ static void* get_sgx_ip(void* tcs) {
 }
 
 static int write_report(int fd) {
-    int ret;
-
     // Write out counters
     struct counter* counter;
     struct counter* tmp;
@@ -104,34 +102,11 @@ static int write_report(int fd) {
         free(counter);
     }
 
-    // Write out debug_map (unfortunately we have to read it from enclave memory)
-    if (g_pal_enclave.debug_map) {
-        struct debug_map* _Atomic pmap;
-        ret = debug_read(&pmap, g_pal_enclave.debug_map, sizeof(pmap));
-        if (IS_ERR(ret))
-            return ret;
-
-        while (pmap) {
-            struct debug_map map;
-            ret = debug_read(&map, pmap, sizeof(map));
-            if (IS_ERR(ret))
-                return ret;
-
-            pal_fdprintf(fd, "file %p ", map.load_addr);
-
-            // Read file_name byte by byte until we encounter null terminator, and write it out
-            char* file_name = map.file_name;
-            char c;
-            do {
-                ret = debug_read(&c, file_name, sizeof(c));
-                if (IS_ERR(ret))
-                    return ret;
-                pal_fdprintf(fd, "%c", c ?: '\n');
-                file_name++;
-            } while (c);
-
-            pmap = map.next;
-        }
+    // Write out g_debug_map
+    struct debug_map* debug_map = (struct debug_map*)g_debug_map;
+    while (debug_map) {
+        pal_fdprintf(fd, "file %p %s\n", debug_map->load_addr, debug_map->file_name);
+        debug_map = (struct debug_map*)debug_map->next;
     }
     return 0;
 }

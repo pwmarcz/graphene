@@ -1363,9 +1363,10 @@ int ocall_delete(const char* pathname) {
     return retval;
 }
 
-int ocall_update_debugger(struct debug_map* _Atomic* debug_map) {
+int ocall_debug_add_map(const char* file_name, void* load_addr) {
     int retval = 0;
-    ms_ocall_update_debugger_t* ms;
+    int len = strlen(file_name) + 1;
+    ms_ocall_debug_add_map_t* ms;
 
     void* old_ustack = sgx_prepare_ustack();
     ms = sgx_alloc_on_ustack_aligned(sizeof(*ms), alignof(*ms));
@@ -1374,8 +1375,35 @@ int ocall_update_debugger(struct debug_map* _Atomic* debug_map) {
         return -EPERM;
     }
 
-    WRITE_ONCE(ms->ms_debug_map, debug_map);
-    retval = sgx_exitless_ocall(OCALL_UPDATE_DEBUGGER, ms);
+    void* untrusted_file_name = sgx_copy_to_ustack(file_name, len);
+    if (!untrusted_file_name) {
+        sgx_reset_ustack(old_ustack);
+        return -EPERM;
+    }
+
+    WRITE_ONCE(ms->ms_file_name, untrusted_file_name);
+    WRITE_ONCE(ms->ms_load_addr, load_addr);
+
+    retval = sgx_exitless_ocall(OCALL_DEBUG_ADD_MAP, ms);
+
+    sgx_reset_ustack(old_ustack);
+    return retval;
+}
+
+int ocall_debug_del_map(void* load_addr) {
+    int retval = 0;
+    ms_ocall_debug_del_map_t* ms;
+
+    void* old_ustack = sgx_prepare_ustack();
+    ms = sgx_alloc_on_ustack_aligned(sizeof(*ms), alignof(*ms));
+    if (!ms) {
+        sgx_reset_ustack(old_ustack);
+        return -EPERM;
+    }
+
+    WRITE_ONCE(ms->ms_load_addr, load_addr);
+
+    retval = sgx_exitless_ocall(OCALL_DEBUG_DEL_MAP, ms);
 
     sgx_reset_ustack(old_ustack);
     return retval;

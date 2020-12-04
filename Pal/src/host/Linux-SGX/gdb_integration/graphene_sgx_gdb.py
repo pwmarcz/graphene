@@ -7,8 +7,46 @@ import os
 
 import gdb # pylint: disable=import-error
 
+try:
+    from elftools.elf.elffile import ELFFile
+except ImportError:
+    print('Python elftools module not found, please install (e.g. apt install python3-pyelftools)')
+    raise
 
 _g_paginations = []
+
+
+# TODO (GDB 8.2): We need to load the ELF file and determine the section addresses manually, because
+# GDB before version 8.2 needs us to provide text address, and all the other section addresses, when
+# loading a file:
+#
+#     add-symbol-file <file_name> <text_addr> -s <section> <section_addr>...
+#
+# GDB 8.2 makes the text_addr parameter optional, and adds an '-o <load_addr>' parameter, which is
+# enough for GDB to load all the sections. When we can depend on it, we will be able to stop parsing
+# the ELF file here.
+
+
+def load_sections(file_name, load_addr):
+    '''
+    Open an ELF file and determine a list of sections along with addresses.
+
+    Returns a dict with {name: addr} elements.
+    '''
+
+    if not os.path.exists(file_name):
+        print('file not found: {}'.format(file_name))
+        return {}
+
+    sections = {}
+    with open(file_name, 'rb') as f:
+        elf = ELFFile(f)
+
+        for section in elf.iter_sections():
+            if section.name and section.header['sh_addr']:
+                sections[section.name] = load_addr + section.header['sh_addr']
+
+    return sections
 
 
 def retrieve_debug_maps():
@@ -19,27 +57,14 @@ def retrieve_debug_maps():
     {load_addr: (file_name, {name: addr})}
     '''
 
-    if int(gdb.parse_and_eval('g_pal_enclave.debug_map')) == 0:
-        # Not initialized yet
-        return {}
-
     debug_maps = {}
-    val_map = gdb.parse_and_eval('*g_pal_enclave.debug_map')
+    val_map = gdb.parse_and_eval('g_debug_map')
     while int(val_map) != 0:
         file_name = val_map['file_name'].string()
         file_name = os.path.abspath(file_name)
-
         load_addr = int(val_map['load_addr'])
 
-        sections = {}
-        val_section = val_map['section']
-        while int(val_section) != 0:
-            name = val_section['name'].string()
-            addr = int(val_section['addr'])
-
-            sections[name] = addr
-            val_section = val_section['next']
-
+        sections = load_sections(file_name, load_addr)
         # We need the text_addr to use add-symbol-file (at least until GDB 8.2).
         if '.text' in sections:
             debug_maps[load_addr] = (file_name, sections)
