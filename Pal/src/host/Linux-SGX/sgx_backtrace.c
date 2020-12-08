@@ -25,6 +25,7 @@
 
 static spinlock_t g_dwfl_lock = INIT_SPINLOCK_UNLOCKED;
 static Dwfl* g_dwfl = NULL;
+static PAL_CONTEXT* g_dwfl_context = NULL;
 static int g_mem_fd = -1;
 
 static bool cb_memory_read(Dwfl* dwfl, Dwarf_Addr addr, Dwarf_Word* result, void* dwfl_arg) {
@@ -56,12 +57,12 @@ static pid_t cb_next_thread(Dwfl* dwfl, void* dwfl_arg, void** thread_argp) {
     if (*thread_argp != NULL)
         return 0;
 
-    *thread_argp = dwfl_arg;
+    *thread_argp = &thread_argp;
     return dwfl_pid(dwfl);
 }
 
 static bool cb_set_initial_registers(Dwfl_Thread* thread, void* thread_arg) {
-    PAL_CONTEXT* context = thread_arg;
+    PAL_CONTEXT* context = g_dwfl_context;
 
     Dwarf_Word dwarf_regs[17];
     dwarf_regs[0] = context->rax;
@@ -175,15 +176,24 @@ int sgx_backtrace_init(void) {
     g_dwfl = dwfl_begin(&g_dwfl_callbacks);
     if (!g_dwfl) {
         SGX_DBG(DBG_E, "dwfl_begin() failed: %s\n", dwfl_errmsg(-1));
-
-        // clean up
-        sgx_backtrace_finish();
-        return -EINVAL;
+        goto out;
     }
+
+    pid_t pid = g_pal_enclave.pal_sec.pid;
 
     sgx_backtrace_update_maps();
 
+    if (!dwfl_attach_state(g_dwfl, EM_NONE, pid, &g_dwfl_thread_callbacks, NULL)) {
+        SGX_DBG(DBG_E, "dwfl_attach_state() failed: %s\n", dwfl_errmsg(-1));
+        goto out;
+    }
+
     return 0;
+
+out:
+    // clean up
+    sgx_backtrace_finish();
+    return -EINVAL;
 }
 
 void sgx_backtrace_finish(void) {
@@ -279,15 +289,12 @@ void sgx_backtrace_print(PAL_CONTEXT* context) {
 
     spinlock_lock(&g_dwfl_lock);
 
-    if (!dwfl_attach_state(g_dwfl, EM_NONE, pid, &g_dwfl_thread_callbacks, context)) {
-        SGX_DBG(DBG_E, "dwfl_attach_state() failed: %s\n", dwfl_errmsg(-1));
-        goto out;
-    }
-
+    g_dwfl_context = context;
     int num = 0;
     if (dwfl_getthread_frames(g_dwfl, pid, cb_print_frame, &num) != 0) {
         SGX_DBG(DBG_E, "dwfl_getthread_frames() failed: %s\n", dwfl_errmsg(-1));
     }
+    g_dwfl_context = NULL;
 
 out:
     spinlock_unlock(&g_dwfl_lock);
