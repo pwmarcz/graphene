@@ -222,38 +222,20 @@ void sgx_backtrace_update_maps(void) {
     // Update inner maps (from the g_debug_map structure).
     struct debug_map* debug_map = (struct debug_map*)g_debug_map;
     while (debug_map) {
-        /*
-         * Call dwfl_report_elf() on a module, but only if it has not been added already.
-         *
-         * This seems to be a quirk of dwfl_report_elf(): even though normally you're supposed to
-         * add all modules again, it is not possible to add an already-added module using this
-         * function (it fails with 'address range overlaps existing module' error).
-         */
-
-        const char* module_name = basename(debug_map->file_name);
-        Dwfl_Module* old_module = dwfl_addrmodule(g_dwfl, (Dwarf_Addr)debug_map->load_addr);
-
-        if (old_module) {
-            /* The module exists, call dwfl_report_module() to prevent it from being removed. */
-
-            Dwarf_Addr old_module_start, old_module_end;
-            const char* old_module_name = dwfl_module_info(
-                old_module,
+        if (debug_map->module) {
+            GElf_Addr start, end;
+            const char* module_name = dwfl_module_info(
+                debug_map->module,
                 /*userdata=*/NULL,
-                /*start=*/&old_module_start,
-                /*end=*/&old_module_end,
+                /*start=*/&start,
+                /*end=*/&end,
                 /*dwbias=*/NULL,
                 /*symbias=*/NULL,
                 /*mainfile=*/NULL,
                 /*debugfile=*/NULL);
-
-            if (strcmp(old_module_name, module_name)) {
-                SGX_DBG(DBG_E, "sgx_backtrace_update_maps: conflicting modules: (old %s, new %s)",
-                        old_module_name, module_name);
-            } else {
-                dwfl_report_module(g_dwfl, module_name, old_module_start, old_module_end);
-            }
+            dwfl_report_module(g_dwfl, module_name, start, end);
         } else {
+            const char* module_name = basename(debug_map->file_name);
             Dwfl_Module* module = dwfl_report_elf(
                 g_dwfl,
                 /*name=*/module_name,
@@ -264,6 +246,7 @@ void sgx_backtrace_update_maps(void) {
 
             if (!module)
                 SGX_DBG(DBG_E, "dwfl_report_module() failed: %s\n", dwfl_errmsg(-1));
+            debug_map->module = module;
         }
         debug_map = (struct debug_map*)debug_map->next;
     }

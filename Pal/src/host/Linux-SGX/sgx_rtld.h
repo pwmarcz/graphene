@@ -15,11 +15,16 @@
 #ifndef SGX_RTLD_H
 #define SGX_RTLD_H
 
+struct Dwfl_Module;
+
 struct debug_map {
     char* file_name;
     void* load_addr;
 
     struct debug_map* _Atomic next;
+
+    // See sgx_backtrace.c
+    struct Dwfl_Module* module;
 };
 
 extern struct debug_map* _Atomic g_debug_map;

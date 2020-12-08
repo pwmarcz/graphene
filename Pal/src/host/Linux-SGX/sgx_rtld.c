@@ -29,6 +29,7 @@ static struct debug_map* debug_map_alloc(const char* file_name, void* load_addr)
 
     map->load_addr = load_addr;
     map->next = NULL;
+    map->module = NULL;
     return map;
 }
 
