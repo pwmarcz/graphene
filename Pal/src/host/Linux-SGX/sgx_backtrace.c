@@ -261,6 +261,20 @@ void sgx_backtrace_print(PAL_CONTEXT* context) {
     if (!g_dwfl)
         return;
 
+    PAL_CONTEXT current;
+    if (!context) {
+        memset(&current, 0, sizeof(current));
+        __asm__(
+            "leaq (%%rip), %%rax\n"
+            "movq %%rax, %0\n"
+            "movq %%rbp, %1\n"
+            "movq %%rsp, %2\n"
+            : "=m"(current.rip), "=m"(current.rbp), "=m"(current.rsp)
+            :: "rax");
+        
+        context = &current;
+    }
+
     pid_t pid = g_pal_enclave.pal_sec.pid;
 
     spinlock_lock(&g_dwfl_lock);
