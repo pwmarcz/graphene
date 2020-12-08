@@ -154,7 +154,7 @@ static void handle_sync_signal(int signum, siginfo_t* info, struct ucontext* uc)
             SGX_DBG(DBG_E, "Memory Mapping Exception in Untrusted Code (RIP = %08lx)\n", rip);
             break;
     }
-    print_backtrace(&pc);
+    sgx_backtrace_print(&pc);
     INLINE_SYSCALL(exit_group, 1, 1);
 }
 

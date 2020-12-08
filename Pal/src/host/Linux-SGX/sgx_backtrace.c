@@ -1,3 +1,17 @@
+/* SPDX-License-Identifier: LGPL-3.0-or-later */
+/* Copyright (C) 2020 Intel Corporation
+ *                    Paweł Marczewski <pawel@invisiblethingslab.com>
+ */
+
+/*
+ * Backtrace support, using libdwfl library.
+ *
+ * The library documentation exists mostly in the header file, see:
+ *    https://sourceware.org/git/?p=elfutils.git;a=blob;f=libdwfl/libdwfl.h
+ *
+ * You can also refer to an example program:
+ *    https://sourceware.org/git/?p=elfutils.git;a=blob;f=tests/backtrace-data.c
+ */
 
 #include <asm/errno.h>
 
@@ -7,87 +21,66 @@
 #include "sgx_internal.h"
 #include "sgx_rtld.h"
 #include "sigset.h"
+#include "spinlock.h"
 
-// https://sourceware.org/git/?p=elfutils.git;a=blob;f=libdwfl/libdwfl.h
-// https://sourceware.org/git/?p=elfutils.git;a=blob;f=tests/backtrace-data.c
-
-// Used by dwfl_standard_find_debuginfo
-static char* g_debuginfo_path;
-
+static spinlock_t g_dwfl_lock = INIT_SPINLOCK_UNLOCKED;
+static Dwfl* g_dwfl = NULL;
 static int g_mem_fd = -1;
 
-/* Read memory from inside enclave (using /proc/self/mem). */
-static int debug_read(void* dest, void* addr, size_t size) {
-    int ret;
-    size_t cur_size = size;
-    void* cur_dest = dest;
-    void* cur_addr = addr;
-
-    while (cur_size > 0) {
-        ret = INLINE_SYSCALL(pread, 4, g_mem_fd, cur_dest, cur_size, (off_t)cur_addr);
-
-        if (IS_ERR(ret) && ERRNO(ret) == EINTR)
-            continue;
-
-        if (IS_ERR(ret)) {
-            SGX_DBG(DBG_E, "debug_read: error reading %lu bytes at %p: %d\n", size, addr, ERRNO(ret));
-            return ret;
-        }
-
-        if (ret == 0) {
-            SGX_DBG(DBG_E, "debug_read: EOF reading %lu bytes at %p\n", size, addr);
-            return -EINVAL;
-        }
-
-        assert(ret > 0);
-        assert((unsigned)ret <= cur_size);
-        cur_size -= ret;
-        cur_dest += ret;
-        cur_addr += ret;
-    }
-    return 0;
-}
-
-static bool memory_read(Dwfl* dwfl, Dwarf_Addr addr, Dwarf_Word* result, void* dwfl_arg) {
+static bool cb_memory_read(Dwfl* dwfl, Dwarf_Addr addr, Dwarf_Word* result, void* dwfl_arg) {
     __UNUSED(dwfl);
     __UNUSED(dwfl_arg);
-    if (debug_read(result, (void*)addr, sizeof(*result)) < 0)
+    int ret = pread_all(g_mem_fd, result, sizeof(*result), (off_t)addr);
+    if (IS_ERR(ret)) {
+        SGX_DBG(DBG_E, "error reading memory at 0x%lu: %d\n", addr, ERRNO(ret));
         return false;
+    }
+    if ((unsigned)ret < sizeof(*result)) {
+        SGX_DBG(DBG_E, "EOF reading memory at 0x%lu: %d\n", addr, ERRNO(ret));
+        return false;
+    }
+
     return true;
 }
 
-static pid_t next_thread(Dwfl* dwfl, void* dwfl_arg, void** thread_argp) {
+/*
+ * Callback for enumerating threads. Because we don't need to process multiple threads at the same
+ * time, we pretend there is just one thread, with TID equal to main process PID.
+ *
+ * This also sets thread_arg (for other callbacks) to the value provided in dwfl_attach_state().
+ */
+static pid_t cb_next_thread(Dwfl* dwfl, void* dwfl_arg, void** thread_argp) {
     __UNUSED(dwfl);
 
+    // If *thread_argp has already been set, report no further threads.
     if (*thread_argp != NULL)
         return 0;
+
     *thread_argp = dwfl_arg;
     return dwfl_pid(dwfl);
 }
 
-static bool set_initial_registers(Dwfl_Thread* thread, void* thread_arg) {
-    PAL_CONTEXT* pc = thread_arg;
+static bool cb_set_initial_registers(Dwfl_Thread* thread, void* thread_arg) {
+    PAL_CONTEXT* context = thread_arg;
 
     Dwarf_Word dwarf_regs[17];
-    dwarf_regs[0] = pc->rax;
-    dwarf_regs[1] = pc->rdx;
-    dwarf_regs[2] = pc->rcx;
-    dwarf_regs[3] = pc->rbx;
-    dwarf_regs[4] = pc->rsi;
-    dwarf_regs[5] = pc->rdi;
-    dwarf_regs[6] = pc->rbp;
-    dwarf_regs[7] = pc->rsp;
-    dwarf_regs[8] = pc->r8;
-    dwarf_regs[9] = pc->r9;
-    dwarf_regs[10] = pc->r10;
-    dwarf_regs[11] = pc->r11;
-    dwarf_regs[12] = pc->r12;
-    dwarf_regs[13] = pc->r13;
-    dwarf_regs[14] = pc->r14;
-    dwarf_regs[15] = pc->r15;
-    dwarf_regs[16] = pc->rip;
-
-    pal_printf("RIP = %p\n", (void*)pc->rip);
+    dwarf_regs[0] = context->rax;
+    dwarf_regs[1] = context->rdx;
+    dwarf_regs[2] = context->rcx;
+    dwarf_regs[3] = context->rbx;
+    dwarf_regs[4] = context->rsi;
+    dwarf_regs[5] = context->rdi;
+    dwarf_regs[6] = context->rbp;
+    dwarf_regs[7] = context->rsp;
+    dwarf_regs[8] = context->r8;
+    dwarf_regs[9] = context->r9;
+    dwarf_regs[10] = context->r10;
+    dwarf_regs[11] = context->r11;
+    dwarf_regs[12] = context->r12;
+    dwarf_regs[13] = context->r13;
+    dwarf_regs[14] = context->r14;
+    dwarf_regs[15] = context->r15;
+    dwarf_regs[16] = context->rip;
 
     if (!dwfl_thread_state_registers(thread, 0, 17, dwarf_regs)) {
         SGX_DBG(DBG_E, "dwfl_thread_state_registers() failed: %s\n", dwfl_errmsg(-1));
@@ -97,88 +90,208 @@ static bool set_initial_registers(Dwfl_Thread* thread, void* thread_arg) {
     return true;
 }
 
-static int print_frame(Dwfl_Frame* state, void* arg) {
-    __UNUSED(arg);
+static int cb_print_frame(Dwfl_Frame* state, void* arg) {
+    int* nump = arg;
+    int num = (*nump)++;
 
-    Dwarf_Addr pc;
-    bool isactivation;
-    if (!dwfl_frame_pc(state, &pc, &isactivation)) {
+    // Determine PC. libdwlf documentation says:
+    // "Typically you need to substract 1 from *PC if *ACTIVATION is false to safely
+    // find function of the caller."
+    Dwarf_Addr pc, pc_adjusted;
+    bool is_activation;
+    if (!dwfl_frame_pc(state, &pc, &is_activation)) {
         SGX_DBG(DBG_E, "dwfl_frame_pc() failed: %s\n", dwfl_errmsg(-1));
         return 1;
     }
-    Dwarf_Addr pc_adjusted = pc - (isactivation ? 0 : 1);
+    pc_adjusted = pc - (is_activation ? 0 : 1);
 
     Dwfl* dwfl = dwfl_thread_dwfl(dwfl_frame_thread(state));
-    Dwfl_Module* mod = dwfl_addrmodule(dwfl, pc_adjusted);
+    Dwfl_Module* module = dwfl_addrmodule(dwfl, pc_adjusted);
 
-    const char* symname = mod ? dwfl_module_addrname(mod, pc_adjusted) : "(unknown)";
-    pal_printf("frame: %p %s\n", (void*)pc_adjusted, symname);
+    if (module) {
+        Dwarf_Addr module_start;
+        const char* module_name = dwfl_module_info(
+            module,
+            /*userdata=*/NULL,
+            /*start=*/&module_start,
+            /*end=*/NULL,
+            /*dwbias=*/NULL,
+            /*symbias=*/NULL,
+            /*mainfile=*/NULL,
+            /*debugfile=*/NULL);
+        const char* sym_name = dwfl_module_addrname(module, pc_adjusted) ?: "??";
+
+        pal_printf("#%d 0x%lx %s (%s: 0x%lx)\n",
+                   num, pc, sym_name,
+                   module_name,
+                   pc - module_start);
+
+    } else {
+        pal_printf("#%d 0x%lx ??\n", num, pc);
+    }
 
     return DWARF_CB_OK;
 }
 
+static const Dwfl_Callbacks g_dwfl_callbacks = {
+    .find_debuginfo = dwfl_standard_find_debuginfo,
+    .debuginfo_path = NULL,
+    .section_address = dwfl_offline_section_address,
+    .find_elf = dwfl_linux_proc_find_elf,
+};
 
-void print_backtrace(PAL_CONTEXT* pc) {
-    int ret = INLINE_SYSCALL(open, 3, "/proc/self/mem", O_RDONLY | O_LARGEFILE, 0);
+static const Dwfl_Thread_Callbacks g_dwfl_thread_callbacks = {
+    .next_thread = cb_next_thread,
+    .get_thread = NULL,
+    .memory_read = cb_memory_read,
+    .set_initial_registers = cb_set_initial_registers,
+    .detach = NULL,
+    .thread_detach = NULL,
+};
+
+static const char* basename(const char* path) {
+    const char* prev = path;
+    while (*path) {
+        if (*path == '/')
+            prev = path + 1;
+        path++;
+    }
+    return prev;
+}
+
+int sgx_backtrace_init(void) {
+    int ret;
+
+    assert(!g_dwfl);
+    assert(g_mem_fd == -1);
+
+    ret = INLINE_SYSCALL(open, 3, "/proc/self/mem", O_RDONLY | O_LARGEFILE, 0);
     if (IS_ERR(ret)) {
-        SGX_DBG(DBG_E, "sgx_profile_init: opening /proc/self/mem failed: %d\n", ERRNO(ret));
-        return;
+        SGX_DBG(DBG_E, "sgx_backtrace_init: opening /proc/self/mem failed: %d\n", ERRNO(ret));
+        return ret;
     }
     g_mem_fd = ret;
 
+    g_dwfl = dwfl_begin(&g_dwfl_callbacks);
+    if (!g_dwfl) {
+        SGX_DBG(DBG_E, "dwfl_begin() failed: %s\n", dwfl_errmsg(-1));
+
+        // clean up
+        sgx_backtrace_finish();
+        return -EINVAL;
+    }
+
+    sgx_backtrace_update_maps();
+
+    return 0;
+}
+
+void sgx_backtrace_finish(void) {
+    if (g_dwfl) {
+        dwfl_end(g_dwfl);
+        g_dwfl = NULL;
+    }
+
+    if (g_mem_fd) {
+        int ret = INLINE_SYSCALL(close, 1, g_mem_fd);
+        if (IS_ERR(ret))
+            SGX_DBG(DBG_E, "sgx_backtrace_init: closing /proc/self/mem failed: %d\n", ERRNO(ret));
+        g_mem_fd = -1;
+    }
+}
+
+/*
+ * Reload module map. libdwfl will not allow us to add/remove a single map, but wants us to report a
+ * full list (between dwfl_report_begin() .. dwfl_report_end()) calls, and will garbage-collect the
+ * modules not added.
+ */
+void sgx_backtrace_update_maps(void) {
+    if (!g_dwfl)
+        return;
 
     pid_t pid = g_pal_enclave.pal_sec.pid;
-    const Dwfl_Callbacks callbacks = {
-        .find_debuginfo = dwfl_standard_find_debuginfo,
-        .debuginfo_path = &g_debuginfo_path,
-        .section_address = dwfl_offline_section_address,
-        .find_elf = dwfl_linux_proc_find_elf,
-    };
 
-    const Dwfl_Thread_Callbacks thread_callbacks = {
-        .next_thread = next_thread,
-        .get_thread = NULL,
-        .memory_read = memory_read,
-        .set_initial_registers = set_initial_registers,
-        .detach = NULL,
-        .thread_detach = NULL,
-    };
+    spinlock_lock(&g_dwfl_lock);
 
-    Dwfl *dwfl = dwfl_begin(&callbacks);
-    if (!dwfl) {
-        SGX_DBG(DBG_E, "dwfl_begin() failed: %s\n", dwfl_errmsg(-1));
-        return;
-    }
-
-    if (dwfl_linux_proc_report(dwfl, pid) != 0) {
+    dwfl_report_begin(g_dwfl);
+    // Update outer PAL maps (from /proc/self/maps).
+    if (dwfl_linux_proc_report(g_dwfl, pid) != 0) {
         SGX_DBG(DBG_E, "dwfl_linux_proc_report() failed: %s\n", dwfl_errmsg(-1));
-        goto out;
     }
 
+    // Update inner maps (from the g_debug_map structure).
     struct debug_map* debug_map = (struct debug_map*)g_debug_map;
     while (debug_map) {
-        Dwfl_Module* mod = dwfl_report_elf(
-            dwfl, debug_map->file_name,
-            debug_map->file_name, -1, (GElf_Addr)debug_map->load_addr, false);
+        /*
+         * Call dwfl_report_elf() on a module, but only if it has not been added already.
+         *
+         * This seems to be a quirk of dwfl_report_elf(): even though normally you're supposed to
+         * add all modules again, it is not possible to add an already-added module using this
+         * function (it fails with 'address range overlaps existing module' error).
+         */
 
-        if (!mod) {
-            SGX_DBG(DBG_E, "dwfl_report_module() failed: %s\n", dwfl_errmsg(-1));
-            // continue
+        const char* module_name = basename(debug_map->file_name);
+        Dwfl_Module* old_module = dwfl_addrmodule(g_dwfl, (Dwarf_Addr)debug_map->load_addr);
+
+        if (old_module) {
+            /* The module exists, call dwfl_report_module() to prevent it from being removed. */
+
+            Dwarf_Addr old_module_start, old_module_end;
+            const char* old_module_name = dwfl_module_info(
+                old_module,
+                /*userdata=*/NULL,
+                /*start=*/&old_module_start,
+                /*end=*/&old_module_end,
+                /*dwbias=*/NULL,
+                /*symbias=*/NULL,
+                /*mainfile=*/NULL,
+                /*debugfile=*/NULL);
+
+            if (strcmp(old_module_name, module_name)) {
+                SGX_DBG(DBG_E, "sgx_backtrace_update_maps: conflicting modules: (old %s, new %s)",
+                        old_module_name, module_name);
+            } else {
+                dwfl_report_module(g_dwfl, module_name, old_module_start, old_module_end);
+            }
+        } else {
+            Dwfl_Module* module = dwfl_report_elf(
+                g_dwfl,
+                /*name=*/module_name,
+                /*file_name=*/debug_map->file_name,
+                /*fd=*/-1,
+                /*base=*/(GElf_Addr)debug_map->load_addr,
+                /*add_p_vaddr=*/false);
+
+            if (!module)
+                SGX_DBG(DBG_E, "dwfl_report_module() failed: %s\n", dwfl_errmsg(-1));
         }
         debug_map = (struct debug_map*)debug_map->next;
     }
 
+    if (dwfl_report_end(g_dwfl, NULL, NULL) != 0)
+        SGX_DBG(DBG_E, "dwfl_report_end() failed: %s\n", dwfl_errmsg(-1));
 
-    if (!dwfl_attach_state(dwfl, EM_NONE, pid, &thread_callbacks, pc)) {
+    spinlock_unlock(&g_dwfl_lock);
+}
+
+void sgx_backtrace_print(PAL_CONTEXT* context) {
+    if (!g_dwfl)
+        return;
+
+    pid_t pid = g_pal_enclave.pal_sec.pid;
+
+    spinlock_lock(&g_dwfl_lock);
+
+    if (!dwfl_attach_state(g_dwfl, EM_NONE, pid, &g_dwfl_thread_callbacks, context)) {
         SGX_DBG(DBG_E, "dwfl_attach_state() failed: %s\n", dwfl_errmsg(-1));
         goto out;
     }
 
-    if (dwfl_getthread_frames(dwfl, pid, print_frame, NULL) != 0) {
+    int num = 0;
+    if (dwfl_getthread_frames(g_dwfl, pid, cb_print_frame, &num) != 0) {
         SGX_DBG(DBG_E, "dwfl_getthread_frames() failed: %s\n", dwfl_errmsg(-1));
-        goto out;
     }
 
 out:
-    dwfl_end(dwfl);
+    spinlock_unlock(&g_dwfl_lock);
 }

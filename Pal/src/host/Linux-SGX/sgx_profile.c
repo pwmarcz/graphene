@@ -42,32 +42,17 @@ static int g_mem_fd = -1;
 
 /* Read memory from inside enclave (using /proc/self/mem). */
 static int debug_read(void* dest, void* addr, size_t size) {
-    int ret;
-    size_t cur_size = size;
-    void* cur_dest = dest;
-    void* cur_addr = addr;
+    ssize_t ret = pread_all(g_mem_fd, dest, size, (off_t)addr);
 
-    while (cur_size > 0) {
-        ret = INLINE_SYSCALL(pread, 4, g_mem_fd, cur_dest, cur_size, (off_t)cur_addr);
+    if (IS_ERR(ret)) {
+        SGX_DBG(DBG_E, "debug_read: error reading %lu bytes at %p: %d\n", size, addr,
+                (int)ERRNO(ret));
+        return ret;
+    }
 
-        if (IS_ERR(ret) && ERRNO(ret) == EINTR)
-            continue;
-
-        if (IS_ERR(ret)) {
-            SGX_DBG(DBG_E, "debug_read: error reading %lu bytes at %p: %d\n", size, addr, ERRNO(ret));
-            return ret;
-        }
-
-        if (ret == 0) {
-            SGX_DBG(DBG_E, "debug_read: EOF reading %lu bytes at %p\n", size, addr);
-            return -EINVAL;
-        }
-
-        assert(ret > 0);
-        assert((unsigned)ret <= cur_size);
-        cur_size -= ret;
-        cur_dest += ret;
-        cur_addr += ret;
+    if ((unsigned)ret < size) {
+        SGX_DBG(DBG_E, "debug_read: EOF reading %lu bytes at %p\n", size, addr);
+        return -EINVAL;
     }
     return 0;
 }

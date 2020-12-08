@@ -70,9 +70,10 @@ enclave-asm-objs = enclave_entry.o
 
 urts-objs = \
 	clone-x86_64.o \
-    sgx_backtrace.o \
+	sgx_backtrace.o \
 	sgx_enclave.o \
 	sgx_exception.o \
+	sgx_files.o \
 	sgx_framework.o \
 	sgx_graphene.o \
 	sgx_main.o \

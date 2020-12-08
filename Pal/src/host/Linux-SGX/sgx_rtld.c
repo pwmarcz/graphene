@@ -49,6 +49,7 @@ int sgx_debug_add_map(const char* file_name, void* load_addr) {
     spinlock_unlock(&g_debug_map_lock);
 
     update_debugger();
+    sgx_backtrace_update_maps();
     return 0;
 }
 
@@ -78,5 +79,6 @@ int sgx_debug_del_map(void* load_addr) {
 
     debug_map_free(map);
     update_debugger();
+    sgx_backtrace_update_maps();
     return 0;
 }

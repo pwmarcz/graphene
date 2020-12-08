@@ -141,14 +141,31 @@ int block_async_signals(bool block);
 
 void update_debugger(void);
 
-#ifdef DEBUG
+/*
+ * File helpers (sgx_files.c)
+ */
+
+// Read up to 'count' bytes at 'offset', retrying if necessary.
+ssize_t pread_all(int fd, void* dest, size_t count, off_t offset);
+
+/*
+ * Profiling (sgx_profile.c)
+ *
+ * Requires DEBUG=1 for async_exit_pointer instrumentation (see sgx_entry.S).
+ */
+
 int sgx_profile_init(bool all);
 void sgx_profile_finish(void);
 void sgx_profile_sample(void* tcs);
-#endif
 
-#ifdef DEBUG
-void print_backtrace(PAL_CONTEXT* uc);
-#endif
+/*
+ * Backtrace support (sgx_backtrace.c)
+ */
+
+int sgx_backtrace_init(void);
+void sgx_backtrace_finish(void);
+// Update debug maps (see sgx_rtld.h)
+void sgx_backtrace_update_maps(void);
+void sgx_backtrace_print(PAL_CONTEXT* context);
 
 #endif

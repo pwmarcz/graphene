@@ -899,6 +899,10 @@ static int load_enclave(struct pal_enclave* enclave, int manifest_fd, char* mani
 
         env_i += strnlen(&env[env_i], env_size - env_i) + 1;
     }
+
+    ret = sgx_backtrace_init();
+    if (ret < 0)
+        return ret;
 #endif
 
     enclave->manifest = manifest_fd;
