@@ -23,9 +23,14 @@
 #include "sigset.h"
 #include "spinlock.h"
 
-static spinlock_t g_dwfl_lock = INIT_SPINLOCK_UNLOCKED;
+/* Current libdwfl session. We keep one per process. */
 static Dwfl* g_dwfl = NULL;
+/* Context to use for cb_set_initial_registers. We use a global variable instead of thread_arg,
+ * because thread_arg is set once per session (in dwfl_attach_state(). */
 static PAL_CONTEXT* g_dwfl_context = NULL;
+/* Lock for g_dwfl and g_dwfl_context. */
+static spinlock_t g_dwfl_lock = INIT_SPINLOCK_UNLOCKED;
+
 static int g_mem_fd = -1;
 
 static bool cb_memory_read(Dwfl* dwfl, Dwarf_Addr addr, Dwarf_Word* result, void* dwfl_arg) {
@@ -47,22 +52,25 @@ static bool cb_memory_read(Dwfl* dwfl, Dwarf_Addr addr, Dwarf_Word* result, void
 /*
  * Callback for enumerating threads. Because we don't need to process multiple threads at the same
  * time, we pretend there is just one thread, with TID equal to main process PID.
- *
- * This also sets thread_arg (for other callbacks) to the value provided in dwfl_attach_state().
  */
 static pid_t cb_next_thread(Dwfl* dwfl, void* dwfl_arg, void** thread_argp) {
     __UNUSED(dwfl);
+    __UNUSED(dwfl_arg);
 
-    // If *thread_argp has already been set, report no further threads.
+    // If *thread_argp has already been set, report no further threads
     if (*thread_argp != NULL)
         return 0;
 
-    *thread_argp = &thread_argp;
+    // Set *thread_argp to a dummy non-null value
+    *thread_argp = thread_argp;
     return dwfl_pid(dwfl);
 }
 
 static bool cb_set_initial_registers(Dwfl_Thread* thread, void* thread_arg) {
+    __UNUSED(thread_arg);
+
     PAL_CONTEXT* context = g_dwfl_context;
+    assert(context);
 
     Dwarf_Word dwarf_regs[17];
     dwarf_regs[0] = context->rax;
@@ -102,7 +110,7 @@ static int cb_print_frame(Dwfl_Frame* state, void* arg) {
     bool is_activation;
     if (!dwfl_frame_pc(state, &pc, &is_activation)) {
         SGX_DBG(DBG_E, "dwfl_frame_pc() failed: %s\n", dwfl_errmsg(-1));
-        return 1;
+        return DWARF_CB_ABORT;
     }
     pc_adjusted = pc - (is_activation ? 0 : 1);
 
@@ -131,6 +139,26 @@ static int cb_print_frame(Dwfl_Frame* state, void* arg) {
         pal_printf("#%d 0x%lx ??\n", num, pc);
     }
 
+    return DWARF_CB_OK;
+}
+
+struct cb_get_frame_data {
+    uint64_t* stack;
+    size_t count;
+    size_t index;
+};
+
+static int cb_get_frame(Dwfl_Frame* state, void* arg) {
+    struct cb_get_frame_data* data = arg;
+    if (data->index >= data->count)
+        return DWARF_CB_ABORT;
+
+    Dwarf_Addr pc;
+    if (!dwfl_frame_pc(state, &pc, NULL)) {
+        SGX_DBG(DBG_E, "dwfl_frame_pc() failed: %s\n", dwfl_errmsg(-1));
+        return DWARF_CB_ABORT;
+    }
+    data->stack[data->index++] = pc;
     return DWARF_CB_OK;
 }
 
@@ -233,6 +261,8 @@ void sgx_backtrace_update_maps(void) {
     struct debug_map* debug_map = (struct debug_map*)g_debug_map;
     while (debug_map) {
         if (debug_map->module) {
+            // The module is already loaded, we must call dwfl_report_module (with the right start
+            // and end parameters) to prevent it from unloading.
             GElf_Addr start, end;
             const char* module_name = dwfl_module_info(
                 debug_map->module,
@@ -267,35 +297,59 @@ void sgx_backtrace_update_maps(void) {
     spinlock_unlock(&g_dwfl_lock);
 }
 
-void sgx_backtrace_print(PAL_CONTEXT* context) {
+void sgx_backtrace_print_from(PAL_CONTEXT* context) {
     if (!g_dwfl)
         return;
-
-    PAL_CONTEXT current;
-    if (!context) {
-        memset(&current, 0, sizeof(current));
-        __asm__(
-            "leaq (%%rip), %%rax\n"
-            "movq %%rax, %0\n"
-            "movq %%rbp, %1\n"
-            "movq %%rsp, %2\n"
-            : "=m"(current.rip), "=m"(current.rbp), "=m"(current.rsp)
-            :: "rax");
-        
-        context = &current;
-    }
 
     pid_t pid = g_pal_enclave.pal_sec.pid;
 
     spinlock_lock(&g_dwfl_lock);
-
     g_dwfl_context = context;
     int num = 0;
     if (dwfl_getthread_frames(g_dwfl, pid, cb_print_frame, &num) != 0) {
         SGX_DBG(DBG_E, "dwfl_getthread_frames() failed: %s\n", dwfl_errmsg(-1));
     }
     g_dwfl_context = NULL;
-
-out:
     spinlock_unlock(&g_dwfl_lock);
+}
+
+void sgx_backtrace_print(void) {
+    if (!g_dwfl)
+        return;
+
+    PAL_CONTEXT context = {0};
+    __asm__(
+        "leaq (%%rip), %%rax\n"
+        "movq %%rax, %0\n"
+        "movq %%rbp, %1\n"
+        "movq %%rsp, %2\n"
+        : "=m"(context.rip), "=m"(context.rbp), "=m"(context.rsp)
+        :: "rax");
+    sgx_backtrace_print_from(&context);
+}
+
+ssize_t sgx_backtrace_get_from(PAL_CONTEXT* context, uint64_t* stack, size_t count) {
+    pid_t pid = g_pal_enclave.pal_sec.pid;
+    struct cb_get_frame_data data = {
+        .stack = stack,
+        .count = count,
+        .index = 0,
+    };
+
+    spinlock_lock(&g_dwfl_lock);
+    g_dwfl_context = context;
+    if (dwfl_getthread_frames(g_dwfl, pid, cb_get_frame, &data) != 0) {
+        /*
+         * If data.index == data.count, we aborted because of filling the stack array.
+         *
+         * Otherwise, there has been an error: report it, but return the number of successfully
+         * retrieved frames.
+         */
+        if (data.index < data.count)
+            SGX_DBG(DBG_E, "dwfl_getthread_frames() failed: %s\n", dwfl_errmsg(-1));
+    }
+    g_dwfl_context = NULL;
+    spinlock_unlock(&g_dwfl_lock);
+
+    return data.index;
 }

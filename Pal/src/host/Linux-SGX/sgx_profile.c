@@ -22,15 +22,18 @@
 #include "spinlock.h"
 #include "uthash.h"
 
+#define MAX_FRAMES 32
+
 #define NSEC_IN_SEC 1000000000
 
 // Assume Linux scheduler will normally interrupt the enclave each 4 ms, or 250 times per second
 #define MAX_DT (NSEC_IN_SEC / 250)
 
 struct counter {
-    void* ip;
-    uint64_t count;
     UT_hash_handle hh;
+    uint64_t value;
+    size_t stack_size;
+    uint64_t stack[];
 };
 
 static spinlock_t g_profile_lock = INIT_SPINLOCK_UNLOCKED;
@@ -57,24 +60,50 @@ static int debug_read(void* dest, void* addr, size_t size) {
     return 0;
 }
 
-static void* get_sgx_ip(void* tcs) {
+static int debug_read_gpr(sgx_pal_gpr_t* gpr, void* tcs) {
     uint64_t ossa;
     uint32_t cssa;
-    if (debug_read(&ossa, tcs + 16, sizeof(ossa)) < 0)
-        return NULL;
-    if (debug_read(&cssa, tcs + 24, sizeof(cssa)) < 0)
-        return NULL;
+    int ret;
+
+    ret = debug_read(&ossa, tcs + 16, sizeof(ossa));
+    if (ret < 0)
+        return ret;
+    ret = debug_read(&cssa, tcs + 24, sizeof(cssa));
+    if (ret < 0)
+        return ret;
 
     void* gpr_addr = (void*)(
         g_pal_enclave.baseaddr
         + ossa + cssa * g_pal_enclave.ssaframesize
         - sizeof(sgx_pal_gpr_t));
 
-    uint64_t rip;
-    if (debug_read(&rip, gpr_addr + offsetof(sgx_pal_gpr_t, rip), sizeof(rip)) < 0)
-        return NULL;
+    ret = debug_read(gpr, gpr_addr, sizeof(*gpr));
+    if (ret < 0)
+        return ret;
 
-    return (void*)rip;
+    return 0;
+}
+
+static void gpr_to_pal_context(PAL_CONTEXT* context, sgx_pal_gpr_t* gpr) {
+    memset(context, 0, sizeof(*context));
+    // Only the registers needed by sgx_backtrace_*.
+    context->r8 = gpr->r8;
+    context->r9 = gpr->r9;
+    context->r10 = gpr->r10;
+    context->r11 = gpr->r11;
+    context->r12 = gpr->r12;
+    context->r13 = gpr->r13;
+    context->r14 = gpr->r14;
+    context->r15 = gpr->r15;
+    context->rdi = gpr->rdi;
+    context->rsi = gpr->rsi;
+    context->rbp = gpr->rbp;
+    context->rbx = gpr->rbx;
+    context->rdx = gpr->rdx;
+    context->rax = gpr->rax;
+    context->rcx = gpr->rcx;
+    context->rsp = gpr->rsp;
+    context->rip = gpr->rip;
 }
 
 static int write_report(int fd) {
@@ -82,7 +111,10 @@ static int write_report(int fd) {
     struct counter* counter;
     struct counter* tmp;
     HASH_ITER(hh, g_counters, counter, tmp) {
-        pal_fdprintf(fd, "counter %p %lu\n", counter->ip, counter->count);
+        pal_fdprintf(fd, "counter ");
+        for (size_t i = 0; i < counter->stack_size; i++)
+            pal_fdprintf(fd, "%lx ", counter->stack[i]);
+        pal_fdprintf(fd, "%lu\n", counter->value);
         HASH_DEL(g_counters, counter);
         free(counter);
     }
@@ -153,6 +185,18 @@ out:
     g_profile_enabled = false;
 }
 
+static ssize_t retrieve_stack(void* tcs, uint64_t* stack, size_t count) {
+    int ret;
+    sgx_pal_gpr_t gpr;
+    PAL_CONTEXT context;
+
+    ret = debug_read_gpr(&gpr, tcs);
+    if (ret < 0)
+        return ret;
+    gpr_to_pal_context(&context, &gpr);
+    return sgx_backtrace_get_from(&context, stack, count);
+}
+
 /*
  * Update counters after exit from enclave.
  *
@@ -166,9 +210,9 @@ void sgx_profile_sample(void* tcs) {
     if (!g_profile_enabled)
         return;
 
-    // Check current IP in enclave
-    void* ip = get_sgx_ip(tcs);
-    if (!ip)
+    uint64_t stack[MAX_FRAMES];
+    ssize_t stack_size = retrieve_stack(tcs, stack, MAX_FRAMES);
+    if (stack_size <= 0)
         return;
 
     // Check current CPU time
@@ -200,20 +244,21 @@ void sgx_profile_sample(void* tcs) {
         spinlock_lock(&g_profile_lock);
 
         struct counter* counter;
-        HASH_FIND_PTR(g_counters, &ip, counter);
+        HASH_FIND(hh, g_counters, stack, stack_size * sizeof(stack[0]), counter);
         if (counter) {
-            counter->count += dt;
+            counter->value += dt;
         } else {
-            counter = malloc(sizeof(*counter));
+            counter = malloc(sizeof(*counter) + stack_size * sizeof(stack[0]));
             if (!counter) {
                 SGX_DBG(DBG_E, "sgx_profile_sample: out of memory\n");
                 spinlock_unlock(&g_profile_lock);
                 return;
             }
 
-            counter->ip = ip;
-            counter->count = dt;
-            HASH_ADD_PTR(g_counters, ip, counter);
+            counter->value = dt;
+            counter->stack_size = stack_size;
+            memcpy(counter->stack, stack, stack_size * sizeof(stack[0]));
+            HASH_ADD(hh, g_counters, stack, stack_size * sizeof(stack[0]), counter);
         }
 
         spinlock_unlock(&g_profile_lock);

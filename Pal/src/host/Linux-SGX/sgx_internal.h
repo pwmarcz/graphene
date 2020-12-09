@@ -166,6 +166,9 @@ int sgx_backtrace_init(void);
 void sgx_backtrace_finish(void);
 // Update debug maps (see sgx_rtld.h)
 void sgx_backtrace_update_maps(void);
-void sgx_backtrace_print(PAL_CONTEXT* context);
+void sgx_backtrace_print_from(PAL_CONTEXT* context);
+void sgx_backtrace_print(void);
+// Retrieve backtrace into a buffer. Returns number of frames.
+ssize_t sgx_backtrace_get_from(PAL_CONTEXT* context, uint64_t* stack, size_t count);
 
 #endif
