@@ -158,6 +158,28 @@ def load_file(file_name):
 
     return counters, files
 
+class Dump:
+    def __init__(self, file_name):
+        counters, files = load_file(file_name)
+        resolver = Resolver(files)
+
+        self.data = Counter()
+        for stack, count in counters.items():
+            resolved = tuple(resolver.resolve(addr) for addr in stack)
+            self.data[resolved] += count
+
+    def run(self, threshold):
+        total = sum(self.data.values())
+        for resolved, count in self.data.most_common():
+            percent = 100 * count / total
+            if percent < threshold:
+                return
+
+            print('{:.2f}% ({})'.format(percent, count))
+            for name, obj in resolved:
+                print('    {:20} {:20}'.format(obj, name))
+            print()
+
 
 class Report:
     def __init__(self, file_name, with_callers=False):
@@ -167,7 +189,8 @@ class Report:
         self.counts = Counter()
         self.callers = defaultdict(Counter)
 
-        if with_callers:
+        self.with_callers = with_callers
+        if self.with_callers:
             for stack, count in counters.items():
                 resolved = [resolver.resolve(addr) for addr in stack[1:]]
                 resolved.append(('?', '?'))
@@ -208,6 +231,30 @@ class Report:
 
             yield caller, percent
 
+    def run(self, threshold):
+        row = ' {:>7}  {:20}  {:20}'
+        c_row = '({:>7}) {:20}  ` {:20}'
+        print(row.format('TIME', 'OBJ', 'SYMBOL'))
+        print()
+
+        for (name, obj), percent in self.iter(threshold):
+            print(row.format(
+                '{:.2f}%'.format(percent),
+                obj,
+                name,
+            ))
+
+            if self.with_callers:
+                for (c_name, c_obj), c_percent in self.iter_callers(
+                        (name, obj), threshold):
+                    print(c_row.format(
+                        '{:.2f}%'.format(c_percent),
+                        c_obj,
+                        c_name,
+                    ))
+                print()
+
+
 
 
 def main():
@@ -220,32 +267,16 @@ def main():
                         '(use 0 to show everything)')
     parser.add_argument('-c', '--callers', action='store_true', dest='with_callers',
                         help='display callers (might be inaccurate)')
+    parser.add_argument('-d', '--dump', action='store_true',
+                        help='dump counters (with resolved addresses)')
     args = parser.parse_args()
 
-    report = Report(args.file_name, args.with_callers)
-
-    row = ' {:>7}  {:20}  {:20}'
-    c_row = '({:>7}) {:20}  ` {:20}'
-    print(row.format('TIME', 'OBJ', 'SYMBOL'))
-    print()
-
-    for (name, obj), percent in report.iter(args.threshold):
-        print(row.format(
-            '{:.2f}%'.format(percent),
-            obj,
-            name,
-        ))
-
-        if args.with_callers:
-            for (c_name, c_obj), c_percent in report.iter_callers(
-                    (name, obj), args.threshold):
-                print(c_row.format(
-                    '{:.2f}%'.format(c_percent),
-                    c_obj,
-                    c_name,
-                ))
-            print()
-
+    if args.dump:
+        dump = Dump(args.file_name)
+        dump.run(args.threshold)
+    else:
+        report = Report(args.file_name, args.with_callers)
+        report.run(args.threshold)
 
 if __name__ == '__main__':
     main()
