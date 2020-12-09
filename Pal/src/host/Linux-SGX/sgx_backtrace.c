@@ -163,7 +163,7 @@ static int cb_get_frame(Dwfl_Frame* state, void* arg) {
 }
 
 static const Dwfl_Callbacks g_dwfl_callbacks = {
-    .find_debuginfo = dwfl_standard_find_debuginfo,
+    .find_debuginfo = NULL, //dwfl_standard_find_debuginfo,
     .debuginfo_path = NULL,
     .section_address = dwfl_offline_section_address,
     .find_elf = dwfl_linux_proc_find_elf,
