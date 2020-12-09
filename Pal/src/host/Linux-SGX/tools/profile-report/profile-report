@@ -7,7 +7,7 @@
 
 import argparse
 import bisect
-from collections import namedtuple
+from collections import namedtuple, defaultdict, Counter
 import os
 from pathlib import Path
 import sys
@@ -107,6 +107,15 @@ class Resolver:
         self.symbols.sort(key=lambda sym: sym.start)
         self.starts = [sym.start for sym in self.symbols]
         self.file_starts = [addr for addr, file_name in self.files]
+        self.cache = {}
+
+    def resolve_cached(self, addr):
+        if addr in self.cache:
+            return self.cache[addr]
+        result = self.resolve(addr)
+
+        self.cache[addr] = result
+        return result
 
     def resolve(self, addr):
         idx = bisect.bisect(self.starts, addr) - 1
@@ -128,17 +137,6 @@ class Resolver:
         obj = os.path.basename(file_name)
         return '({:x})'.format(addr - file_addr), obj
 
-    def resolve_all(self, counters):
-        result = {}
-        for addr, count in counters.items():
-            location = self.resolve(addr)
-            if location in result:
-                result[location] += count
-            else:
-                result[location] = count
-
-        return result
-
 
 def load_file(file_name):
     counters = {}
@@ -147,16 +145,69 @@ def load_file(file_name):
         for line in f:
             line = line.rstrip()
             if line.startswith('counter'):
-                _, s_addr, s_count = line.split(' ', 3)
-                addr = int(s_addr, 16)
-                count = int(s_count)
-                counters[addr] = count
+                # counter 0x<addr> ... <count>
+                parts = line.split(' ')
+                stack = tuple(int(part, 16) for part in parts[1:-1])
+                count = int(parts[-1])
+                counters[stack] = count
             elif line.startswith('file'):
+                # file 0x<addr> <file_name>
                 _, s_addr, file_name = line.split(' ', 3)
                 addr = int(s_addr, 16)
                 files.append((addr, file_name))
 
     return counters, files
+
+
+class Report:
+    def __init__(self, file_name, with_callers=False):
+        counters, files = load_file(file_name)
+        resolver = Resolver(files)
+
+        self.counts = Counter()
+        self.callers = defaultdict(Counter)
+
+        if with_callers:
+            for stack, count in counters.items():
+                resolved = [resolver.resolve(addr) for addr in stack[1:]]
+                resolved.append(('?', '?'))
+                self.counts[resolved[0]] += count
+                for i in range(0, len(stack) - 1):
+                    self.counts[resolved[i]] += count
+                    self.callers[resolved[i]][resolved[i+1]] += count
+        else:
+            for stack, count in counters.items():
+                location = resolver.resolve(stack[0])
+                self.counts[location] += count
+
+
+    def iter(self, threshold):
+        '''
+        Yield (location, percent) tuples, starting from most common.
+        '''
+
+        total = sum(self.counts.values())
+        for location, count in self.counts.most_common():
+            percent = 100 * count / total
+            if percent < threshold:
+                return
+
+            yield location, percent
+
+    def iter_callers(self, orig_location, threshold):
+        '''
+        Yield (location, percent) tuples, starting from most common, for callers of a specific
+        location.
+        '''
+        callers = self.callers[orig_location]
+        total = sum(callers.values())
+        for caller, count in callers.most_common():
+            percent = 100 * count / total
+            if percent < threshold:
+                return
+
+            yield caller, percent
+
 
 
 def main():
@@ -167,26 +218,33 @@ def main():
     parser.add_argument('-t', '--threshold', type=float, default=0.05, metavar='K',
                         help='discard samples less frequent than K%%, default: %(default)s '
                         '(use 0 to show everything)')
+    parser.add_argument('-c', '--callers', action='store_true', dest='with_callers',
+                        help='display callers (might be inaccurate)')
     args = parser.parse_args()
 
-    counters, files = load_file(args.file_name)
-    resolver = Resolver(files)
-    report = resolver.resolve_all(counters)
+    report = Report(args.file_name, args.with_callers)
 
-    total = sum(counters.values())
-
-    row = '{:>7}  {:20}  {:20}'
+    row = ' {:>7}  {:20}  {:20}'
+    c_row = '({:>7}) {:20}  ` {:20}'
     print(row.format('TIME', 'OBJ', 'SYMBOL'))
     print()
 
-    for (name, obj), count in sorted(report.items(), key=lambda item: item[1], reverse=True):
-        percent = 100 * count / total
-        if percent >= args.threshold:
-            print(row.format(
-                '{:.2f}%'.format(percent),
-                obj,
-                name,
-            ))
+    for (name, obj), percent in report.iter(args.threshold):
+        print(row.format(
+            '{:.2f}%'.format(percent),
+            obj,
+            name,
+        ))
+
+        if args.with_callers:
+            for (c_name, c_obj), c_percent in report.iter_callers(
+                    (name, obj), args.threshold):
+                print(c_row.format(
+                    '{:.2f}%'.format(c_percent),
+                    c_obj,
+                    c_name,
+                ))
+            print()
 
 
 if __name__ == '__main__':
