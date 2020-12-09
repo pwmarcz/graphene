@@ -138,8 +138,6 @@ static void handle_sync_signal(int signum, siginfo_t* info, struct ucontext* uc)
 
     /* exception happened in untrusted PAL code (during syscall handling): fatal in Graphene */
     unsigned long rip = pal_ucontext_get_ip(uc);
-    PAL_CONTEXT pc;
-    ucontext_to_pal_context(&pc, uc);
     switch (signum) {
         case SIGSEGV:
             SGX_DBG(DBG_E, "Segmentation Fault in Untrusted Code (RIP = %08lx)\n", rip);
@@ -154,7 +152,6 @@ static void handle_sync_signal(int signum, siginfo_t* info, struct ucontext* uc)
             SGX_DBG(DBG_E, "Memory Mapping Exception in Untrusted Code (RIP = %08lx)\n", rip);
             break;
     }
-    sgx_backtrace_print_from(&pc);
     INLINE_SYSCALL(exit_group, 1, 1);
 }
 
