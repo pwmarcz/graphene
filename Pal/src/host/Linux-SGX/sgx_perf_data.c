@@ -12,16 +12,19 @@
  * - include/uapi/linux/perf_event.h
  * - tools/perf/util/header.h
  *
- * We use the "pipe-mode data" variant, which allows outputting events without going back to update
- * any header structures. The important events are:
+ * Unfortunately, the format contains a header with data offsets and sizes, as well as additional
+ * headers at the end of files. To simplify processing, we write all of these on closing (pd_close).
  *
- * - PERF_RECORD_HEADER_ATTR: specifies sample_type for PERF_RECORD_SAMPLE events
- * - PERF_RECORD_MMAP: reports mmap of executable region (for later extraction of symbols / call
- *   chain)
- * - PERF_RECORD_SAMPLE: program state (present fields depend on flags in sample_type)
+ * (There is also a simpler "pipe-mode data" format, which does not require seeking, but it's less
+ * convenient to use because perf userspace tools recognize it only when reading from stdin. This
+ * has been fixed in Linux 5.8: https://lkml.org/lkml/2020/5/7/294)
  *
- * For debugging the output, you can use 'perf script -D -i <filename>', which shows a partial parse
- * of the file.
+ * To view the report, use 'perf report -i <filename>'.
+ *
+ * For debugging the output, you can use:
+ *
+ * - perf script -D -i <filename>: show a partial parse of the file
+ * - perf script -v -i <filename>: show more errors if the file doesn't parse
  */
 
 #include <asm/errno.h>
@@ -31,9 +34,8 @@
 #include "perm.h"
 #include "sgx_internal.h"
 
-/* Buffering */
+#define PROLOGUE_SIZE (sizeof(struct perf_file_header) + sizeof(struct perf_file_attr))
 
-#define EV_SIZE 16384
 #define BUF_SIZE (1024 * 1024)
 
 /* Internal perf.data file definitions - see linux/tools/perf/util/header.h */
@@ -50,75 +52,115 @@ struct perf_file_header {
     uint64_t magic;
     uint64_t size;
     uint64_t attr_size;
-    struct perf_file_section        attrs;
-    struct perf_file_section        data;
-    struct perf_file_section        event_types;
+    struct perf_file_section attrs;
+    struct perf_file_section data;
+    struct perf_file_section event_types;
     uint64_t flags[4];
 };
 
 struct perf_file_attr {
     struct perf_event_attr attr;
     struct perf_file_section ids;
-
-
 };
 
 struct perf_data {
     int fd;
     size_t file_pos;
-    size_t data_end_pos;
-
-    // Current event (built using pd_begin .. pd_end)
-    size_t ev_pos;
-    uint8_t ev[EV_SIZE];
-
-    // Data to be written to file
+    // Assume last buf_pos bytes have not been written yet
     size_t buf_pos;
     uint8_t buf[BUF_SIZE];
 };
 
-static void pd_write(struct perf_data* pd, const void* data, size_t size) {
-    assert(pd->buf_pos + size < ARRAY_SIZE(pd->buf));
-    memcpy(pd->buf + pd->buf_pos, data, size);
-    pd->buf_pos += size;
-}
-
-static ssize_t pwrite_all(int fd, const void* buf, size_t count, off_t offset) {
+static ssize_t write_all(int fd, const void* buf, size_t count) {
     while (count > 0) {
-        ssize_t ret = INLINE_SYSCALL(pwrite, 4, fd, buf, count, offset);
+        ssize_t ret = INLINE_SYSCALL(write, 3, fd, buf, count);
         if (ret == -EINTR)
             continue;
         if (ret < 0)
             return ret;
         count -= ret;
-        offset += ret;
         buf += ret;
     }
     return 0;
 }
 
+static int pd_flush(struct perf_data* pd) {
+    if (pd->buf_pos == 0)
+        return 0;
+
+    ssize_t ret = write_all(pd->fd, pd->buf, pd->buf_pos);
+    if (ret < 0)
+        return ret;
+    pd->buf_pos = 0;
+    return 0;
+}
+
+// Add data to buffer; flush first if necessary
+static int pd_write(struct perf_data* pd, const void* data, size_t size) {
+    if (pd->buf_pos + size > sizeof(pd->buf)) {
+        int ret = pd_flush(pd);
+        if (ret < 0)
+            return ret;
+    }
+
+    assert(pd->buf_pos + size < sizeof(pd->buf));
+    memcpy(pd->buf + pd->buf_pos, data, size);
+    pd->buf_pos += size;
+    pd->file_pos += size;
+    return 0;
+}
+
 struct perf_data* pd_open(const char* file_name) {
+    int ret;
+
     int fd = INLINE_SYSCALL(open, 3, file_name, O_WRONLY | O_TRUNC | O_CREAT, PERM_rw_r__r__);
     if (fd < 0) {
         SGX_DBG(DBG_E, "pd_open: cannot open %s for writing: %d\n", file_name, -fd);
         return NULL;
     }
 
+    ret = INLINE_SYSCALL(ftruncate, 2, fd, PROLOGUE_SIZE);
+    if (ret < 0)
+        goto out;
+
+    ret = INLINE_SYSCALL(lseek, 3, fd, PROLOGUE_SIZE, SEEK_SET);
+    if (ret < 0)
+        goto out;
+
     struct perf_data* pd = malloc(sizeof(*pd));
     if (!pd) {
         SGX_DBG(DBG_E, "pd_open: out of memory\n");
-        int ret = INLINE_SYSCALL(close, 1, fd);
-        if (ret < 0)
-            SGX_DBG(DBG_E, "pd_open: close failed: %d\n", ret);
-        return NULL;
+        goto out;
     }
 
     pd->fd = fd;
-    pd->file_pos = 0;
-    pd->ev_pos = 0;
+    pd->file_pos = PROLOGUE_SIZE;
     pd->buf_pos = 0;
+    return pd;
 
-    // Initialize buffer with header and attribute section.
+out:
+    ret = INLINE_SYSCALL(close, 1, fd);
+    if (ret < 0)
+        SGX_DBG(DBG_E, "pd_open: close failed: %d\n", ret);
+    return NULL;
+};
+
+static int write_prologue_epilogue(struct perf_data* pd) {
+    int ret;
+
+    assert(pd->buf_pos == 0); // all data flushed
+    size_t data_end = pd->file_pos;
+
+    /*
+     * Prologue, at beginning of file:
+     * - struct perf_file_header: description of other file sections
+     * - struct perf_file_attr: event configuration
+     */
+
+    ret = INLINE_SYSCALL(lseek, 3, pd->fd, 0, SEEK_SET);
+    if (ret < 0)
+        return ret;
+
     struct perf_file_attr attr = {
         .attr = {
             .type = PERF_TYPE_SOFTWARE,
@@ -136,130 +178,125 @@ struct perf_data* pd_open(const char* file_name) {
             .size = sizeof(attr),
         },
         .data = {
-            .offset = sizeof(header) + sizeof(attr),
-            .size = 0, // updated in pd_flush()
+            .offset = PROLOGUE_SIZE,
+            .size = data_end - PROLOGUE_SIZE,
         },
         .event_types = {0},
         .flags = {0},
     };
-    /* Signifies that a HEADER_ARCH section will be included after data section.
-       Added in pd_close(). */
+    // Signifies that a HEADER_ARCH section will be included after data section
     header.flags[0] |= 1 << HEADER_ARCH;
-    pd_write(pd, &header, sizeof(header));
-    pd_write(pd, &attr, sizeof(attr));
-    pd->data_end_pos = pd->buf_pos;
-    return pd;
-};
 
-static int pd_flush(struct perf_data* pd) {
-    if (pd->buf_pos == 0)
-        return 0;
-
-    ssize_t ret = pwrite_all(pd->fd, pd->buf, pd->buf_pos, pd->file_pos);
-    if (ret < 0) {
-        SGX_DBG(DBG_E, "pd_flush: pwrite failed: %d\n", (int)-ret);
+    ret = write_all(pd->fd, &header, sizeof(header));
+    if (ret < 0)
         return ret;
-    }
-    pd->file_pos += pd->buf_pos;
-    pd->buf_pos = 0;
-    return 0;
-}
+    ret = write_all(pd->fd, &attr, sizeof(attr));
+    if (ret < 0)
+        return ret;
 
-int pd_close(struct perf_data* pd) {
-    int ret;
+    /*
+     * Epilogue, after the data section. Contains header sections, as specified by header.flags.
+     * We include a HEADER_ARCH section. While it's documented as optional, 'perf script' crashes
+     * without it.
+     */
 
-    ret = pd_flush(pd);
+    ret = INLINE_SYSCALL(lseek, 3, pd->fd, data_end, SEEK_SET);
     if (ret < 0)
         return ret;
 
     const char* arch = "x86_64";
-    uint32_t arch_len = strlen(arch);
+    uint32_t arch_size = strlen(arch) + 1;
     struct perf_file_section arch_section = {
         .offset = pd->file_pos + sizeof(arch_section),
-        .size = sizeof(arch_len) + arch_len,
+        .size = sizeof(arch_size) + arch_size,
     };
-    pd_write(pd, &arch_section, sizeof(arch_section));
-    pd_write(pd, &arch_len, sizeof(arch_len));
-    pd_write(pd, arch, arch_len);
-
-    ret = pd_flush(pd);
+    ret = write_all(pd->fd, &arch_section, sizeof(arch_section));
+    if (ret < 0)
+        return ret;
+    ret = write_all(pd->fd, &arch_size, sizeof(arch_size));
+    if (ret < 0)
+        return ret;
+    ret = write_all(pd->fd, arch, arch_size);
     if (ret < 0)
         return ret;
 
-    // Update size
-    uint64_t size = pd->data_end_pos - sizeof(struct perf_file_header) - sizeof(struct perf_file_attr);
-    ret = pwrite_all(pd->fd, &size, sizeof(size), offsetof(struct perf_file_header, data.size));
+    return 0;
+}
 
-    ret = INLINE_SYSCALL(close, 1, pd->fd);
+int pd_close(struct perf_data* pd) {
+    int ret = 0;
+
+    ret = pd_flush(pd);
     if (ret < 0)
-        SGX_DBG(DBG_E, "pd_close: close failed: %d\n", ret);
+        goto out;
+
+    ret = write_prologue_epilogue(pd);
+    if (ret < 0)
+        goto out;
+
+    int close_ret;
+out:
+    close_ret = INLINE_SYSCALL(close, 1, pd->fd);
+    if (close_ret < 0)
+        SGX_DBG(DBG_E, "pd_close: close failed: %d\n", -close_ret);
+
     free(pd);
-    return 0;
-}
-
-static void pd_ev_write(struct perf_data* pd, const void* data, size_t size) {
-    assert(pd->ev_pos + size < ARRAY_SIZE(pd->ev));
-    memcpy(pd->ev + pd->ev_pos, data, size);
-    pd->ev_pos += size;
-}
-
-static inline void pd_ev_write16(struct perf_data* pd, uint16_t val) {
-    pd_ev_write(pd, &val, sizeof(val));
-}
-
-static inline void pd_ev_write32(struct perf_data* pd, uint32_t val) {
-    pd_ev_write(pd, &val, sizeof(val));
-}
-
-static inline void pd_ev_write64(struct perf_data* pd, uint64_t val) {
-    pd_ev_write(pd, &val, sizeof(val));
-}
-
-/* Begin a new event */
-static void pd_begin(struct perf_data* pd, uint32_t type, uint16_t misc) {
-    assert(pd->ev_pos == 0);
-    // struct perf_event_header { u32 type; u16 misc; u16 size; }
-    pd_ev_write32(pd, type);
-    pd_ev_write16(pd, misc);
-    pd_ev_write16(pd, 0); // updated in pd_end()
-}
-
-static int pd_end(struct perf_data* pd) {
-    assert(pd->ev_pos > 0);
-    // Overwrite size
-    uint16_t size = pd->ev_pos;
-    memcpy(pd->ev + sizeof(uint32_t) + sizeof(uint16_t), &size, sizeof(size));
-
-    if (pd->buf_pos + pd->ev_pos > ARRAY_SIZE(pd->buf)) {
-        int ret = pd_flush(pd);
-        if (ret < 0)
-            return ret;
-    }
-
-    pd_write(pd, pd->ev, pd->ev_pos);
-    pd->ev_pos = 0;
-    pd->data_end_pos = pd->file_pos + pd->buf_pos;
-    return 0;
+    return ret;
 }
 
 int pd_event_mmap(struct perf_data* pd, const char* filename, uint32_t pid, uint64_t addr,
                   uint64_t len, uint64_t pgoff) {
-    pd_begin(pd, PERF_RECORD_MMAP, 0);
-    pd_ev_write32(pd, pid);
-    pd_ev_write32(pd, pid); // tid (set same as pid)
-    pd_ev_write64(pd, addr);
-    pd_ev_write64(pd, len);
-    pd_ev_write64(pd, pgoff);
-    pd_ev_write(pd, filename, strlen(filename));
-    return pd_end(pd);
+    size_t filename_size = strlen(filename) + 1;
+    struct {
+        struct perf_event_header header;
+
+        uint32_t pid, tid;
+        uint64_t addr, len, pgoff;
+    } event = {
+        .header = {
+            .type = PERF_RECORD_MMAP,
+            .misc = 0,
+            .size = sizeof(event) + filename_size,
+        },
+
+        .pid = pid,
+        .tid = pid,
+        .addr = addr,
+        .len = len,
+        .pgoff = pgoff,
+    };
+    int ret;
+    ret = pd_write(pd, &event, sizeof(event));
+    if (ret < 0)
+        return ret;
+    ret = pd_write(pd, filename, filename_size);
+    if (ret < 0)
+        return ret;
+    return 0;
 }
 
 int pd_event_sample(struct perf_data* pd, uint64_t ip, uint32_t pid,
                     uint32_t tid, uint64_t period) {
-    pd_begin(pd, PERF_RECORD_SAMPLE, PERF_RECORD_MISC_USER);
-    pd_ev_write64(pd, ip);
-    pd_ev_write32(pd, pid);
-    pd_ev_write32(pd, tid);
-    pd_ev_write64(pd, period);
-    return pd_end(pd);
+    struct {
+        struct perf_event_header header;
+
+        uint64_t ip;
+        uint32_t pid, tid;
+        uint64_t period;
+    } event = {
+        .header = {
+            .type = PERF_RECORD_SAMPLE,
+            .misc = PERF_RECORD_MISC_USER, // user/kernel/hypervisor
+            .size = sizeof(event),
+        },
+
+        .ip = ip,
+        .pid = pid,
+        .tid = tid,
+        .period = period,
+    };
+    int ret = pd_write(pd, &event, sizeof(event));
+    if (ret < 0)
+        return ret;
+    return 0;
 }

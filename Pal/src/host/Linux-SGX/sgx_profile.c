@@ -96,6 +96,7 @@ int sgx_profile_init(const char* file_name) {
 
     struct perf_data* pd = pd_open(file_name);
     if (!pd) {
+        SGX_DBG(DBG_E, "sgx_profile_init: pd_open failed\n");
         ret = -EINVAL;
         goto out;
     }
@@ -116,16 +117,21 @@ out:
 }
 
 void sgx_profile_finish(void) {
+    int ret;
+
     if (!g_profile_enabled)
         return;
 
-    pd_close(g_perf_data); // ignore errors (reported in pd_close)
+    ret = pd_close(g_perf_data);
+    if (IS_ERR(ret))
+        SGX_DBG(DBG_E, "sgx_profile_finish: pd_close failed: %d\n", ERRNO(ret));
     g_perf_data = NULL;
 
-    int ret = INLINE_SYSCALL(close, 1, g_mem_fd);
+    ret = INLINE_SYSCALL(close, 1, g_mem_fd);
     if (IS_ERR(ret))
         SGX_DBG(DBG_E, "sgx_profile_finish: closing /proc/self/mem failed: %d\n", ERRNO(ret));
     g_mem_fd = -1;
+
     g_profile_enabled = false;
 }
 
@@ -139,6 +145,8 @@ void sgx_profile_finish(void) {
  * count if AEX events happen more often.
  */
 void sgx_profile_sample(void* tcs) {
+    int ret;
+
     if (!g_profile_enabled)
         return;
 
@@ -149,7 +157,7 @@ void sgx_profile_sample(void* tcs) {
 
     // Check current CPU time
     struct timespec ts;
-    int ret = INLINE_SYSCALL(clock_gettime, 2, CLOCK_THREAD_CPUTIME_ID, &ts);
+    ret = INLINE_SYSCALL(clock_gettime, 2, CLOCK_THREAD_CPUTIME_ID, &ts);
     if (IS_ERR(ret)) {
         SGX_DBG(DBG_E, "sgx_profile_sample: clock_gettime failed: %d\n", ERRNO(ret));
         return;
@@ -181,7 +189,9 @@ void sgx_profile_sample(void* tcs) {
         }
 
         spinlock_lock(&g_profile_lock);
-        pd_event_sample(g_perf_data, (uint64_t)ip, pid, tid, period);
+        ret = pd_event_sample(g_perf_data, (uint64_t)ip, pid, tid, period);
+        if (IS_ERR(ret))
+            SGX_DBG(DBG_E, "sgx_profile_sample: pd_event_sample failed: %d\n", ERRNO(ret));
         spinlock_unlock(&g_profile_lock);
     }
 }
