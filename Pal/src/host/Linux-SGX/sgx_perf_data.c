@@ -39,6 +39,7 @@
 /* Internal perf.data file definitions - see linux/tools/perf/util/header.h */
 
 #define PERF_MAGIC 0x32454c4946524550ULL  // "PERFILE2"
+#define HEADER_ARCH 6
 
 struct perf_file_section {
     uint64_t offset;
@@ -58,11 +59,14 @@ struct perf_file_header {
 struct perf_file_attr {
     struct perf_event_attr attr;
     struct perf_file_section ids;
+
+
 };
 
 struct perf_data {
     int fd;
-    int file_pos;
+    size_t file_pos;
+    size_t data_end_pos;
 
     // Current event (built using pd_begin .. pd_end)
     size_t ev_pos;
@@ -72,6 +76,12 @@ struct perf_data {
     size_t buf_pos;
     uint8_t buf[BUF_SIZE];
 };
+
+static void pd_write(struct perf_data* pd, const void* data, size_t size) {
+    assert(pd->buf_pos + size < ARRAY_SIZE(pd->buf));
+    memcpy(pd->buf + pd->buf_pos, data, size);
+    pd->buf_pos += size;
+}
 
 static ssize_t pwrite_all(int fd, const void* buf, size_t count, off_t offset) {
     while (count > 0) {
@@ -106,6 +116,7 @@ struct perf_data* pd_open(const char* file_name) {
     pd->fd = fd;
     pd->file_pos = 0;
     pd->ev_pos = 0;
+    pd->buf_pos = 0;
 
     // Initialize buffer with header and attribute section.
     struct perf_file_attr attr = {
@@ -131,9 +142,12 @@ struct perf_data* pd_open(const char* file_name) {
         .event_types = {0},
         .flags = {0},
     };
-    memcpy(pd->buf, &header, sizeof(header));
-    memcpy(pd->buf + sizeof(header), &attr, sizeof(attr));
-    pd->buf_pos = sizeof(header) + sizeof(attr);
+    /* Signifies that a HEADER_ARCH section will be included after data section.
+       Added in pd_close(). */
+    header.flags[0] |= 1 << HEADER_ARCH;
+    pd_write(pd, &header, sizeof(header));
+    pd_write(pd, &attr, sizeof(attr));
+    pd->data_end_pos = pd->buf_pos;
     return pd;
 };
 
@@ -141,7 +155,6 @@ static int pd_flush(struct perf_data* pd) {
     if (pd->buf_pos == 0)
         return 0;
 
-    // Flush buffer data
     ssize_t ret = pwrite_all(pd->fd, pd->buf, pd->buf_pos, pd->file_pos);
     if (ret < 0) {
         SGX_DBG(DBG_E, "pd_flush: pwrite failed: %d\n", (int)-ret);
@@ -149,10 +162,6 @@ static int pd_flush(struct perf_data* pd) {
     }
     pd->file_pos += pd->buf_pos;
     pd->buf_pos = 0;
-
-    // Update size
-    uint64_t size = pd->file_pos - sizeof(struct perf_file_header) - sizeof(struct perf_file_attr);
-    ret = pwrite_all(pd->fd, &size, sizeof(size), offsetof(struct perf_file_header, data.size));
     return 0;
 }
 
@@ -163,6 +172,24 @@ int pd_close(struct perf_data* pd) {
     if (ret < 0)
         return ret;
 
+    const char* arch = "x86_64";
+    uint32_t arch_len = strlen(arch);
+    struct perf_file_section arch_section = {
+        .offset = pd->file_pos + sizeof(arch_section),
+        .size = sizeof(arch_len) + arch_len,
+    };
+    pd_write(pd, &arch_section, sizeof(arch_section));
+    pd_write(pd, &arch_len, sizeof(arch_len));
+    pd_write(pd, arch, arch_len);
+
+    ret = pd_flush(pd);
+    if (ret < 0)
+        return ret;
+
+    // Update size
+    uint64_t size = pd->data_end_pos - sizeof(struct perf_file_header) - sizeof(struct perf_file_attr);
+    ret = pwrite_all(pd->fd, &size, sizeof(size), offsetof(struct perf_file_header, data.size));
+
     ret = INLINE_SYSCALL(close, 1, pd->fd);
     if (ret < 0)
         SGX_DBG(DBG_E, "pd_close: close failed: %d\n", ret);
@@ -170,31 +197,31 @@ int pd_close(struct perf_data* pd) {
     return 0;
 }
 
-static void pd_write(struct perf_data* pd, const void* data, size_t size) {
+static void pd_ev_write(struct perf_data* pd, const void* data, size_t size) {
     assert(pd->ev_pos + size < ARRAY_SIZE(pd->ev));
     memcpy(pd->ev + pd->ev_pos, data, size);
     pd->ev_pos += size;
 }
 
-static inline void pd_write16(struct perf_data* pd, uint16_t val) {
-    pd_write(pd, &val, sizeof(val));
+static inline void pd_ev_write16(struct perf_data* pd, uint16_t val) {
+    pd_ev_write(pd, &val, sizeof(val));
 }
 
-static inline void pd_write32(struct perf_data* pd, uint32_t val) {
-    pd_write(pd, &val, sizeof(val));
+static inline void pd_ev_write32(struct perf_data* pd, uint32_t val) {
+    pd_ev_write(pd, &val, sizeof(val));
 }
 
-static inline void pd_write64(struct perf_data* pd, uint64_t val) {
-    pd_write(pd, &val, sizeof(val));
+static inline void pd_ev_write64(struct perf_data* pd, uint64_t val) {
+    pd_ev_write(pd, &val, sizeof(val));
 }
 
 /* Begin a new event */
 static void pd_begin(struct perf_data* pd, uint32_t type, uint16_t misc) {
     assert(pd->ev_pos == 0);
     // struct perf_event_header { u32 type; u16 misc; u16 size; }
-    pd_write32(pd, type);
-    pd_write16(pd, misc);
-    pd_write16(pd, 0); // updated in pd_end()
+    pd_ev_write32(pd, type);
+    pd_ev_write16(pd, misc);
+    pd_ev_write16(pd, 0); // updated in pd_end()
 }
 
 static int pd_end(struct perf_data* pd) {
@@ -209,31 +236,30 @@ static int pd_end(struct perf_data* pd) {
             return ret;
     }
 
-    assert(pd->buf_pos + pd->ev_pos <= ARRAY_SIZE(pd->buf));
-    memcpy(pd->buf + pd->buf_pos, pd->ev, pd->ev_pos);
-    pd->buf_pos += pd->ev_pos;
+    pd_write(pd, pd->ev, pd->ev_pos);
     pd->ev_pos = 0;
+    pd->data_end_pos = pd->file_pos + pd->buf_pos;
     return 0;
 }
 
 int pd_event_mmap(struct perf_data* pd, const char* filename, uint32_t pid, uint64_t addr,
                   uint64_t len, uint64_t pgoff) {
     pd_begin(pd, PERF_RECORD_MMAP, 0);
-    pd_write32(pd, pid);
-    pd_write32(pd, pid); // tid (set same as pid)
-    pd_write64(pd, addr);
-    pd_write64(pd, len);
-    pd_write64(pd, pgoff);
-    pd_write(pd, filename, strlen(filename));
+    pd_ev_write32(pd, pid);
+    pd_ev_write32(pd, pid); // tid (set same as pid)
+    pd_ev_write64(pd, addr);
+    pd_ev_write64(pd, len);
+    pd_ev_write64(pd, pgoff);
+    pd_ev_write(pd, filename, strlen(filename));
     return pd_end(pd);
 }
 
 int pd_event_sample(struct perf_data* pd, uint64_t ip, uint32_t pid,
                     uint32_t tid, uint64_t period) {
     pd_begin(pd, PERF_RECORD_SAMPLE, PERF_RECORD_MISC_USER);
-    pd_write64(pd, ip);
-    pd_write32(pd, pid);
-    pd_write32(pd, tid);
-    pd_write64(pd, period);
+    pd_ev_write64(pd, ip);
+    pd_ev_write32(pd, pid);
+    pd_ev_write32(pd, tid);
+    pd_ev_write64(pd, period);
     return pd_end(pd);
 }
