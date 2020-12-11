@@ -317,7 +317,7 @@ static int initialize_enclave(struct pal_enclave* enclave, bool first_process) {
     }
 #ifdef DEBUG
     bool enable_profile = false;
-    bool enable_profile_all = false;
+    char profile_file_name[64] = "sgx-perf.data";
 
     if (!profile_str || !strcmp(profile_str, "none")) {
         // do not enable
@@ -327,7 +327,8 @@ static int initialize_enclave(struct pal_enclave* enclave, bool first_process) {
         }
     } else if (!strcmp(profile_str, "all")) {
         enable_profile = true;
-        enable_profile_all = true;
+        snprintf(profile_file_name, sizeof(profile_file_name), "sgx-perf-%d.data",
+                 (int)INLINE_SYSCALL(getpid, 0));
     } else {
         SGX_DBG(DBG_E, "Invalid \'sgx.profile\' (the value must be \"none', \"main\" or \"all\")\n");
         ret = -EINVAL;
@@ -341,7 +342,7 @@ static int initialize_enclave(struct pal_enclave* enclave, bool first_process) {
             goto out;
         }
 
-        ret = sgx_profile_init(/*all=*/enable_profile_all);
+        ret = sgx_profile_init(profile_file_name);
         if (ret < 0)
             goto out;
     }

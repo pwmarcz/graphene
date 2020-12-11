@@ -148,9 +148,24 @@ int block_async_signals(bool block);
 void update_debugger(void);
 
 #ifdef DEBUG
-int sgx_profile_init(bool all);
+int sgx_profile_init(const char* file_name);
 void sgx_profile_finish(void);
 void sgx_profile_sample(void* tcs);
 #endif
+
+/* perf.data output (sgx_perf_data.h) */
+
+struct perf_data;
+
+struct perf_data* pd_open(const char* file_name);
+int pd_close(struct perf_data* pd);
+
+/* Write PERF_RECORD_MMAP (report mmap of executable region) */
+int pd_event_mmap(struct perf_data* pd, const char* filename, uint32_t pid, uint64_t addr,
+                  uint64_t len, uint64_t pgoff);
+
+/* Write PERF_RECORD_SAMPLE (instruction pointer and time period) */
+int pd_event_sample(struct perf_data* pd, uint64_t ip, uint32_t pid,
+                    uint32_t tid, uint64_t period);
 
 #endif
