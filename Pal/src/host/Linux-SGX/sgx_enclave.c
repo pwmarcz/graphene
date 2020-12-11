@@ -680,7 +680,7 @@ static long sgx_ocall_report_mmap(void* pms) {
     ODEBUG(OCALL_REPORT_MMAP, ms);
 
 #ifdef DEBUG
-    sgx_profile_report_mmap(ms->ms_filename, ms->ms_start, ms->ms_end, ms->ms_offset);
+    sgx_profile_report_mmap(ms->ms_filename, ms->ms_addr, ms->ms_len, ms->ms_offset);
 #else
     __UNUSED(ms);
 #endif

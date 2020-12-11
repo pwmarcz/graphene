@@ -303,11 +303,11 @@ noreturn void pal_linux_main(char* uptr_libpal_uri, size_t libpal_uri_len, char*
     init_cpuid();
     init_tsc();
 
-    /* now we can add a link map for PAL itself */
-    setup_pal_map(&g_pal_map);
-
     /* Set the alignment early */
     g_pal_state.alloc_align = g_page_size;
+
+    /* now we can add a link map for PAL itself */
+    setup_pal_map(&g_pal_map);
 
     /* initialize enclave properties */
     rv = init_enclave();

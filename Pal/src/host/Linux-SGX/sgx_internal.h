@@ -151,7 +151,7 @@ void update_debugger(void);
 int sgx_profile_init(const char* filename);
 void sgx_profile_finish(void);
 void sgx_profile_sample(void* tcs);
-void sgx_profile_report_mmap(const char* filename, void* start, void* end, uint64_t offset);
+void sgx_profile_report_mmap(const char* filename, uint64_t addr, uint64_t len, uint64_t offset);
 #endif
 
 /* perf.data output (sgx_perf_data.h) */

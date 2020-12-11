@@ -24,6 +24,7 @@ SECTIONS
     g_section_text = .;
     /* the rest of text segments */
     *(.text .stub .text.*);
+    g_section_text_end = .;
   }
   .fini          : { *(.fini) }
   .eh_frame_hdr  : { *(.eh_frame_hdr) }

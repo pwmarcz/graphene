@@ -288,8 +288,8 @@ typedef struct {
 
 typedef struct {
     const char* ms_filename;
-    void* ms_start;
-    void* ms_end;
+    uint64_t ms_addr;
+    uint64_t ms_len;
     uint64_t ms_offset;
 } ms_ocall_report_mmap_t;
 

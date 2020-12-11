@@ -94,7 +94,7 @@ int ocall_delete(const char* pathname);
 
 int ocall_update_debugger(struct debug_map* _Atomic* debug_map);
 
-int ocall_report_mmap(const char* filename, void* start, void* end, uint64_t offset);
+int ocall_report_mmap(const char* filename, uint64_t addr, uint64_t len, uint64_t offset);
 
 int ocall_eventfd(unsigned int initval, int flags);
 

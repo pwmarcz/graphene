@@ -198,13 +198,23 @@ void _DkDebugAddMap(struct link_map* map) {
     }
 
     debug_map_add(debug_map);
+
+    for (ph = phdr; ph < &phdr[ehdr->e_phnum]; ++ph)
+        if (ph->p_type == PT_LOAD && ph->p_flags & PF_X) {
+            uint64_t mapstart = ALLOC_ALIGN_DOWN(ph->p_vaddr);
+            uint64_t mapend = ALLOC_ALIGN_UP(ph->p_vaddr + ph->p_filesz);
+            uint64_t offset = ALLOC_ALIGN_DOWN(ph->p_offset);
+            ocall_report_mmap(map->l_name, map->l_addr + mapstart, mapend - mapstart, offset);
+        }
 }
 
 void _DkDebugDelMap(struct link_map* map) {
     debug_map_del((void*)map->l_addr);
 }
 
+extern void* pal_start_addr;
 extern void* g_section_text;
+extern void* g_section_text_end;
 extern void* g_section_rodata;
 extern void* g_section_dynamic;
 extern void* g_section_data;
@@ -245,6 +255,16 @@ void setup_pal_map(struct link_map* pal_map) {
         goto fail;
 
     debug_map_add(debug_map);
+    ElfW(Phdr)* phdr = (void*)(pal_map->l_addr + header->e_phoff);
+    const ElfW(Phdr)* ph;
+    for (ph = phdr; ph < &phdr[header->e_phnum]; ++ph)
+        if (ph->p_type == PT_LOAD && ph->p_flags & PF_X) {
+            uint64_t mapstart = ALLOC_ALIGN_DOWN(ph->p_vaddr);
+            uint64_t mapend = ALLOC_ALIGN_UP(ph->p_vaddr + ph->p_filesz);
+            uint64_t offset = ALLOC_ALIGN_DOWN(ph->p_offset);
+            ocall_report_mmap(pal_map->l_name, pal_map->l_addr + mapstart, mapend - mapstart, offset);
+        }
+
     return;
 
 fail:
