@@ -148,9 +148,10 @@ int block_async_signals(bool block);
 void update_debugger(void);
 
 #ifdef DEBUG
-int sgx_profile_init(const char* file_name);
+int sgx_profile_init(const char* filename);
 void sgx_profile_finish(void);
 void sgx_profile_sample(void* tcs);
+void sgx_profile_report_mmap(const char* filename, void* start, void* end, uint64_t offset);
 #endif
 
 /* perf.data output (sgx_perf_data.h) */

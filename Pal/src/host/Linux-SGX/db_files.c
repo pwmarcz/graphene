@@ -392,6 +392,12 @@ static int pf_file_map(struct protected_file* pf, PAL_HANDLE handle, void** addr
         memset(*addr + copy_size, 0, size - copy_size);
     }
 
+#if DEBUG
+    if (prot & PAL_PROT_EXEC) {
+        ocall_report_mmap(handle->file.realpath, *addr, *addr + size, offset);
+    }
+#endif
+
     /* Writes will be flushed to the PF on close. */
     ret = 0;
 out:
@@ -472,6 +478,11 @@ static int file_map(PAL_HANDLE handle, void** addr, int prot, uint64_t offset, u
 
     ocall_munmap_untrusted(umem, map_end - map_start);
     *addr = mem;
+#if DEBUG
+    if (prot & PAL_PROT_EXEC) {
+        ocall_report_mmap(handle->file.realpath, (void*)map_start, (void*)map_end, offset);
+    }
+#endif
     return 0;
 }
 

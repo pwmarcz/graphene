@@ -82,7 +82,7 @@ static void* get_sgx_ip(void* tcs) {
     return (void*)rip;
 }
 
-int sgx_profile_init(const char* file_name) {
+int sgx_profile_init(const char* filename) {
     assert(!g_profile_enabled);
     assert(g_mem_fd == -1);
     assert(!g_perf_data);
@@ -94,7 +94,7 @@ int sgx_profile_init(const char* file_name) {
     }
     g_mem_fd = ret;
 
-    struct perf_data* pd = pd_open(file_name);
+    struct perf_data* pd = pd_open(filename);
     if (!pd) {
         SGX_DBG(DBG_E, "sgx_profile_init: pd_open failed\n");
         ret = -EINVAL;
@@ -102,7 +102,7 @@ int sgx_profile_init(const char* file_name) {
     }
     g_perf_data = pd;
 
-    SGX_DBG(DBG_I, "Writing profile data to %s\n", file_name);
+    SGX_DBG(DBG_I, "Writing profile data to %s\n", filename);
     g_profile_enabled = true;
     return 0;
 
@@ -190,10 +190,23 @@ void sgx_profile_sample(void* tcs) {
 
         spinlock_lock(&g_profile_lock);
         ret = pd_event_sample(g_perf_data, (uint64_t)ip, pid, tid, period);
+        spinlock_unlock(&g_profile_lock);
         if (IS_ERR(ret))
             SGX_DBG(DBG_E, "sgx_profile_sample: pd_event_sample failed: %d\n", ERRNO(ret));
-        spinlock_unlock(&g_profile_lock);
     }
+}
+
+void sgx_profile_report_mmap(const char* filename, void* start, void* end, uint64_t offset) {
+    if (!g_profile_enabled)
+        return;
+
+    pid_t pid = g_pal_enclave.pal_sec.pid;
+
+    spinlock_lock(&g_profile_lock);
+    int ret = pd_event_mmap(g_perf_data, filename, pid, (uint64_t)start, (uint64_t) end, (uint64_t) offset);
+    spinlock_unlock(&g_profile_lock);
+    if (IS_ERR(ret))
+        SGX_DBG(DBG_E, "sgx_profile_report_mmap: pd_event_mmap failed: %d\n", ERRNO(ret));
 }
 
 #endif /* DEBUG */
