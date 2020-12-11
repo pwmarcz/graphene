@@ -255,16 +255,6 @@ void setup_pal_map(struct link_map* pal_map) {
         goto fail;
 
     debug_map_add(debug_map);
-    ElfW(Phdr)* phdr = (void*)(pal_map->l_addr + header->e_phoff);
-    const ElfW(Phdr)* ph;
-    for (ph = phdr; ph < &phdr[header->e_phnum]; ++ph)
-        if (ph->p_type == PT_LOAD && ph->p_flags & PF_X) {
-            uint64_t mapstart = ALLOC_ALIGN_DOWN(ph->p_vaddr);
-            uint64_t mapend = ALLOC_ALIGN_UP(ph->p_vaddr + ph->p_filesz);
-            uint64_t offset = ALLOC_ALIGN_DOWN(ph->p_offset);
-            ocall_report_mmap(pal_map->l_name, pal_map->l_addr + mapstart, mapend - mapstart, offset);
-        }
-
     return;
 
 fail:
