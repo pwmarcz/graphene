@@ -242,8 +242,9 @@ void sgx_profile_sample(void* tcs) {
         return;
     }
 
+    assert(sample_time >= tcb->profile_sample_time);
     // Report a sample, if necessary
-    if (tcb->profile_sample_time - sample_time >= g_profile_period) {
+    if (sample_time - tcb->profile_sample_time >= g_profile_period) {
         tcb->profile_sample_time = sample_time;
 
         pid_t pid = g_pal_enclave.pal_sec.pid;
