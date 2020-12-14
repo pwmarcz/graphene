@@ -189,6 +189,7 @@ static int write_prologue_epilogue(struct perf_data* pd) {
             .size = sizeof(attr.attr),
             // Determines the set of data in PERF_RECORD_SAMPLE (see pd_event_sample()).
             .sample_type = (PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_PERIOD |
+                            PERF_SAMPLE_CALLCHAIN |
                             PERF_SAMPLE_REGS_USER | PERF_SAMPLE_STACK_USER),
             .sample_regs_user = SAMPLE_REGS,
         },
@@ -311,6 +312,10 @@ int pd_event_sample(struct perf_data* pd, uint64_t ip, uint32_t pid,
         uint64_t period;
 
         struct {
+            uint64_t nr;
+        } callchain;
+
+        struct {
             uint64_t abi;
             uint64_t regs[NUM_SAMPLE_REGS];
         } regs;
@@ -331,6 +336,10 @@ int pd_event_sample(struct perf_data* pd, uint64_t ip, uint32_t pid,
         .pid = pid,
         .tid = tid,
         .period = period,
+
+        .callchain = {
+            .nr = 0,
+        },
 
         .regs = {
             .abi = PERF_SAMPLE_REGS_ABI_64,
