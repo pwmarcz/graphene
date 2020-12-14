@@ -12,6 +12,7 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <linux/limits.h>
 #include <stddef.h>
 
 #include "cpu.h"
@@ -19,6 +20,9 @@
 #include "sgx_tls.h"
 #include "spinlock.h"
 #include "string.h"
+
+// glibc realpath; declared here because the headers will conflict with PAL
+char* realpath(const char* path, char* resolved_path);
 
 #define NSEC_IN_SEC 1000000000
 
@@ -261,18 +265,18 @@ void sgx_profile_sample(void* tcs) {
     }
 }
 
-
-
-char *realpath(const char *path, char *resolved_path);
-
 void sgx_profile_report_mmap(const char* filename, uint64_t addr, uint64_t len, uint64_t offset) {
     if (!g_profile_enabled)
         return;
 
-    char buf[4096];
+    // Convert filename to absolute path - some tools (e.g. libunwind in 'perf report') refuse to
+    // process relative paths.
+    char buf[PATH_MAX];
     char* path = realpath(filename, buf);
-    if (!path)
+    if (!path) {
+        SGX_DBG(DBG_E, "sgx_profile_report_mmap: realpath(%s) failed\n", filename);
         return;
+    }
 
     pid_t pid = g_pal_enclave.pal_sec.pid;
 
