@@ -163,10 +163,14 @@ void sgx_profile_finish(void) {
     if (!g_profile_enabled)
         return;
 
+    spinlock_lock(&g_profile_lock);
+
     size = pd_close(g_perf_data);
     if (IS_ERR(size))
         SGX_DBG(DBG_E, "sgx_profile_finish: pd_close failed: %d\n", ERRNO((int)size));
     g_perf_data = NULL;
+
+    spinlock_unlock(&g_profile_lock);
 
     ret = INLINE_SYSCALL(close, 1, g_mem_fd);
     if (IS_ERR(ret))
