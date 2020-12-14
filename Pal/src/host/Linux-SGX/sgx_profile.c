@@ -160,6 +160,14 @@ void sgx_profile_sample(void* tcs) {
         SGX_DBG(DBG_E, "sgx_profile_sample: error reading GPR: %d\n", ERRNO(ret));
         return;
     }
+    uint8_t stack[PD_STACK_SIZE];
+    size_t stack_size;
+    ret = debug_read(stack, (void*)gpr.rsp, sizeof(stack));
+    if (IS_ERR(ret)) {
+        SGX_DBG(DBG_E, "sgx_profile_sample: error reading stack: %d\n", ERRNO(ret));
+        return;
+    }
+    stack_size = ret;
 
     // Check current CPU time
     struct timespec ts;
@@ -195,7 +203,7 @@ void sgx_profile_sample(void* tcs) {
         }
 
         spinlock_lock(&g_profile_lock);
-        ret = pd_event_sample(g_perf_data, gpr.rip, pid, tid, period, &gpr);
+        ret = pd_event_sample(g_perf_data, gpr.rip, pid, tid, period, &gpr, stack, stack_size);
         spinlock_unlock(&g_profile_lock);
         if (IS_ERR(ret))
             SGX_DBG(DBG_E, "sgx_profile_sample: pd_event_sample failed: %d\n", ERRNO(ret));

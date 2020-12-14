@@ -156,6 +156,8 @@ void sgx_profile_report_mmap(const char* filename, uint64_t addr, uint64_t len, 
 
 /* perf.data output (sgx_perf_data.h) */
 
+#define PD_STACK_SIZE 8192
+
 struct perf_data;
 
 struct perf_data* pd_open(const char* file_name);
@@ -167,6 +169,6 @@ int pd_event_mmap(struct perf_data* pd, const char* filename, uint32_t pid, uint
 
 /* Write PERF_RECORD_SAMPLE (instruction pointer and time period) */
 int pd_event_sample(struct perf_data* pd, uint64_t ip, uint32_t pid,
-                    uint32_t tid, uint64_t period, sgx_pal_gpr_t* gpr);
+                    uint32_t tid, uint64_t period, sgx_pal_gpr_t* gpr, void* stack, size_t stack_size);
 
 #endif

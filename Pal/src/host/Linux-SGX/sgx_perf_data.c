@@ -189,7 +189,7 @@ static int write_prologue_epilogue(struct perf_data* pd) {
             .size = sizeof(attr.attr),
             // Determines the set of data in PERF_RECORD_SAMPLE (see pd_event_sample()).
             .sample_type = (PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_PERIOD |
-                            PERF_SAMPLE_REGS_USER),
+                            PERF_SAMPLE_REGS_USER | PERF_SAMPLE_STACK_USER),
             .sample_regs_user = SAMPLE_REGS,
         },
         .ids = {0},
@@ -302,7 +302,7 @@ int pd_event_mmap(struct perf_data* pd, const char* filename, uint32_t pid, uint
 
 int pd_event_sample(struct perf_data* pd, uint64_t ip, uint32_t pid,
                     uint32_t tid, uint64_t period,
-                    sgx_pal_gpr_t* gpr) {
+                    sgx_pal_gpr_t* gpr, void* stack, size_t stack_size) {
     struct {
         struct perf_event_header header;
 
@@ -310,8 +310,16 @@ int pd_event_sample(struct perf_data* pd, uint64_t ip, uint32_t pid,
         uint32_t pid, tid;
         uint64_t period;
 
-        uint64_t abi;
-        uint64_t regs[NUM_SAMPLE_REGS];
+        struct {
+            uint64_t abi;
+            uint64_t regs[NUM_SAMPLE_REGS];
+        } regs;
+
+        struct {
+            uint64_t size;
+            uint8_t data[PD_STACK_SIZE];
+            uint64_t dyn_size;
+        } stack;
     } event = {
         .header = {
             .type = PERF_RECORD_SAMPLE,
@@ -324,29 +332,35 @@ int pd_event_sample(struct perf_data* pd, uint64_t ip, uint32_t pid,
         .tid = tid,
         .period = period,
 
-        .abi = PERF_SAMPLE_REGS_ABI_64,
         .regs = {
-            gpr->rax,
-            gpr->rbx,
-            gpr->rcx,
-            gpr->rdx,
-            gpr->rsi,
-            gpr->rdi,
-            gpr->rbp,
-            gpr->rsp,
-            gpr->rip,
-            gpr->rflags,
-            gpr->r8,
-            gpr->r9,
-            gpr->r10,
-            gpr->r11,
-            gpr->r12,
-            gpr->r13,
-            gpr->r14,
-            gpr->r15,
+            .abi = PERF_SAMPLE_REGS_ABI_64,
+            .regs = {
+                gpr->rax,
+                gpr->rbx,
+                gpr->rcx,
+                gpr->rdx,
+                gpr->rsi,
+                gpr->rdi,
+                gpr->rbp,
+                gpr->rsp,
+                gpr->rip,
+                gpr->rflags,
+                gpr->r8,
+                gpr->r9,
+                gpr->r10,
+                gpr->r11,
+                gpr->r12,
+                gpr->r13,
+                gpr->r14,
+                gpr->r15,
+            },
+        },
+        .stack = {
+            .size = PD_STACK_SIZE,
+            .dyn_size = stack_size,
         },
     };
-
+    memcpy(&event.stack.data, stack, stack_size);
 
     int ret = pd_write(pd, &event, sizeof(event));
     if (ret < 0)
