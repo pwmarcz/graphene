@@ -28,6 +28,7 @@
  */
 
 #include <asm/errno.h>
+#include <asm/perf_regs.h>
 #include <assert.h>
 #include <linux/perf_event.h>
 
@@ -37,6 +38,27 @@
 #define PROLOGUE_SIZE (sizeof(struct perf_file_header) + sizeof(struct perf_file_attr))
 
 #define BUF_SIZE (1024 * 1024)
+
+/* Registers to sample - see arch/x86/include/uapi/asm/perf_regs.h */
+#define NUM_SAMPLE_REGS 18
+#define SAMPLE_REGS ((1 << PERF_REG_X86_AX)    | \
+                     (1 << PERF_REG_X86_BX)    | \
+                     (1 << PERF_REG_X86_CX)    | \
+                     (1 << PERF_REG_X86_DX)    | \
+                     (1 << PERF_REG_X86_SI)    | \
+                     (1 << PERF_REG_X86_DI)    | \
+                     (1 << PERF_REG_X86_BP)    | \
+                     (1 << PERF_REG_X86_SP)    | \
+                     (1 << PERF_REG_X86_IP)    | \
+                     (1 << PERF_REG_X86_FLAGS) | \
+                     (1 << PERF_REG_X86_R8)    | \
+                     (1 << PERF_REG_X86_R9)    | \
+                     (1 << PERF_REG_X86_R10)   | \
+                     (1 << PERF_REG_X86_R11)   | \
+                     (1 << PERF_REG_X86_R12)   | \
+                     (1 << PERF_REG_X86_R13)   | \
+                     (1 << PERF_REG_X86_R14)   | \
+                     (1 << PERF_REG_X86_R15))
 
 /* Internal perf.data file definitions - see linux/tools/perf/util/header.h */
 
@@ -165,7 +187,10 @@ static int write_prologue_epilogue(struct perf_data* pd) {
         .attr = {
             .type = PERF_TYPE_SOFTWARE,
             .size = sizeof(attr.attr),
-            .sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_PERIOD,
+            // Determines the set of data in PERF_RECORD_SAMPLE (see pd_event_sample()).
+            .sample_type = (PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_PERIOD |
+                            PERF_SAMPLE_REGS_USER),
+            .sample_regs_user = SAMPLE_REGS,
         },
         .ids = {0},
     };
@@ -276,13 +301,17 @@ int pd_event_mmap(struct perf_data* pd, const char* filename, uint32_t pid, uint
 }
 
 int pd_event_sample(struct perf_data* pd, uint64_t ip, uint32_t pid,
-                    uint32_t tid, uint64_t period) {
+                    uint32_t tid, uint64_t period,
+                    sgx_pal_gpr_t* gpr) {
     struct {
         struct perf_event_header header;
 
         uint64_t ip;
         uint32_t pid, tid;
         uint64_t period;
+
+        uint64_t abi;
+        uint64_t regs[NUM_SAMPLE_REGS];
     } event = {
         .header = {
             .type = PERF_RECORD_SAMPLE,
@@ -294,7 +323,31 @@ int pd_event_sample(struct perf_data* pd, uint64_t ip, uint32_t pid,
         .pid = pid,
         .tid = tid,
         .period = period,
+
+        .abi = PERF_SAMPLE_REGS_ABI_64,
+        .regs = {
+            gpr->rax,
+            gpr->rbx,
+            gpr->rcx,
+            gpr->rdx,
+            gpr->rsi,
+            gpr->rdi,
+            gpr->rbp,
+            gpr->rsp,
+            gpr->rip,
+            gpr->rflags,
+            gpr->r8,
+            gpr->r9,
+            gpr->r10,
+            gpr->r11,
+            gpr->r12,
+            gpr->r13,
+            gpr->r14,
+            gpr->r15,
+        },
     };
+
+
     int ret = pd_write(pd, &event, sizeof(event));
     if (ret < 0)
         return ret;

@@ -167,6 +167,6 @@ int pd_event_mmap(struct perf_data* pd, const char* filename, uint32_t pid, uint
 
 /* Write PERF_RECORD_SAMPLE (instruction pointer and time period) */
 int pd_event_sample(struct perf_data* pd, uint64_t ip, uint32_t pid,
-                    uint32_t tid, uint64_t period);
+                    uint32_t tid, uint64_t period, sgx_pal_gpr_t* gpr);
 
 #endif

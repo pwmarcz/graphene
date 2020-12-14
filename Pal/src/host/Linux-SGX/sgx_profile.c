@@ -33,53 +33,57 @@ static int g_mem_fd = -1;
 /* Read memory from inside enclave (using /proc/self/mem). */
 static int debug_read(void* dest, void* addr, size_t size) {
     int ret;
-    size_t cur_size = size;
-    void* cur_dest = dest;
-    void* cur_addr = addr;
+    size_t total = 0;
 
-    while (cur_size > 0) {
-        ret = INLINE_SYSCALL(pread, 4, g_mem_fd, cur_dest, cur_size, (off_t)cur_addr);
+    while (size > 0) {
+        ret = INLINE_SYSCALL(pread, 4, g_mem_fd, dest, size, (off_t)addr);
 
         if (IS_ERR(ret) && ERRNO(ret) == EINTR)
             continue;
 
-        if (IS_ERR(ret)) {
-            SGX_DBG(DBG_E, "debug_read: error reading %lu bytes at %p: %d\n", size, addr, ERRNO(ret));
-            return ret;
-        }
-
-        if (ret == 0) {
-            SGX_DBG(DBG_E, "debug_read: EOF reading %lu bytes at %p\n", size, addr);
-            return -EINVAL;
-        }
+        if (IS_ERR(ret))
+            break;
 
         assert(ret > 0);
-        assert((unsigned)ret <= cur_size);
-        cur_size -= ret;
-        cur_dest += ret;
-        cur_addr += ret;
+        assert((unsigned)ret <= size);
+        size -= ret;
+        dest += ret;
+        addr += ret;
+        total += ret;
     }
+    return total;
+}
+
+static int debug_read_all(void* dest, void* addr, size_t size) {
+    int ret = debug_read(dest, addr, size);
+    if (IS_ERR(ret))
+        return ret;
+    if ((unsigned)ret < size)
+        return -EINVAL;
     return 0;
 }
 
-static void* get_sgx_ip(void* tcs) {
+static int get_sgx_gpr(sgx_pal_gpr_t* gpr, void* tcs) {
+    int ret;
     uint64_t ossa;
     uint32_t cssa;
-    if (debug_read(&ossa, tcs + 16, sizeof(ossa)) < 0)
-        return NULL;
-    if (debug_read(&cssa, tcs + 24, sizeof(cssa)) < 0)
-        return NULL;
+    ret = debug_read_all(&ossa, tcs + 16, sizeof(ossa));
+    if (ret < 0)
+        return ret;
+    ret = debug_read_all(&cssa, tcs + 24, sizeof(cssa));
+    if (ret < 0)
+        return ret;
 
     void* gpr_addr = (void*)(
         g_pal_enclave.baseaddr
         + ossa + cssa * g_pal_enclave.ssaframesize
         - sizeof(sgx_pal_gpr_t));
 
-    uint64_t rip;
-    if (debug_read(&rip, gpr_addr + offsetof(sgx_pal_gpr_t, rip), sizeof(rip)) < 0)
-        return NULL;
+    ret = debug_read_all(gpr, gpr_addr, sizeof(*gpr));
+    if (ret < 0)
+        return ret;
 
-    return (void*)rip;
+    return 0;
 }
 
 int sgx_profile_init(const char* filename) {
@@ -150,10 +154,12 @@ void sgx_profile_sample(void* tcs) {
     if (!g_profile_enabled)
         return;
 
-    // Check current IP in enclave
-    void* ip = get_sgx_ip(tcs);
-    if (!ip)
+    sgx_pal_gpr_t gpr;
+    ret = get_sgx_gpr(&gpr, tcs);
+    if (IS_ERR(ret)) {
+        SGX_DBG(DBG_E, "sgx_profile_sample: error reading GPR: %d\n", ERRNO(ret));
         return;
+    }
 
     // Check current CPU time
     struct timespec ts;
@@ -189,7 +195,7 @@ void sgx_profile_sample(void* tcs) {
         }
 
         spinlock_lock(&g_profile_lock);
-        ret = pd_event_sample(g_perf_data, (uint64_t)ip, pid, tid, period);
+        ret = pd_event_sample(g_perf_data, gpr.rip, pid, tid, period, &gpr);
         spinlock_unlock(&g_profile_lock);
         if (IS_ERR(ret))
             SGX_DBG(DBG_E, "sgx_profile_sample: pd_event_sample failed: %d\n", ERRNO(ret));
