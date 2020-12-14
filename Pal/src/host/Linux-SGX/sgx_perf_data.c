@@ -37,7 +37,7 @@
 
 #define PROLOGUE_SIZE (sizeof(struct perf_file_header) + sizeof(struct perf_file_attr))
 
-#define BUF_SIZE (1024 * 1024)
+#define BUF_SIZE (32 * 1024 * 1024)
 
 /* Registers to sample - see arch/x86/include/uapi/asm/perf_regs.h */
 #define NUM_SAMPLE_REGS 18
