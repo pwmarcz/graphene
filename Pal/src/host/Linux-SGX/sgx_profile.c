@@ -126,7 +126,6 @@ int sgx_profile_init(const char* filename, bool with_stack, uint64_t frequency) 
     }
     g_perf_data = pd;
 
-    // Generate an initial "command" event, so that the threads have a common name in the report.
     pid_t pid = g_pal_enclave.pal_sec.pid;
     ret = pd_event_command(pd, "pal-sgx", pid, /*tid=*/pid);
     if (!pd) {
@@ -167,8 +166,6 @@ void sgx_profile_finish(void) {
     if (!g_profile_enabled)
         return;
 
-    spinlock_lock(&g_profile_lock);
-
     size = pd_close(g_perf_data);
     if (IS_ERR(size))
         SGX_DBG(DBG_E, "sgx_profile_finish: pd_close failed: %d\n", ERRNO((int)size));
@@ -185,8 +182,6 @@ void sgx_profile_finish(void) {
     g_profile_filename = NULL;
 
     g_profile_enabled = false;
-
-    spinlock_unlock(&g_profile_lock);
 }
 
 static void sample_simple(void* tcs, pid_t pid, pid_t tid) {
@@ -273,12 +268,9 @@ void sgx_profile_sample(void* tcs) {
     if (sample_time - tcb->profile_sample_time >= g_profile_period) {
         tcb->profile_sample_time = sample_time;
 
+        // Report all events as the same PID so that they are grouped in report.
         pid_t pid = g_pal_enclave.pal_sec.pid;
-        pid_t tid = get_tid_from_tcs(tcs);
-        if (IS_ERR(ret)) {
-            SGX_DBG(DBG_E, "sgx_profile_sample: could not determine TID: %d\n", ERRNO(ret));
-            tid = pid;
-        }
+        pid_t tid = pid;
 
         if (g_profile_with_stack)
             sample_stack(tcs, pid, tid);
