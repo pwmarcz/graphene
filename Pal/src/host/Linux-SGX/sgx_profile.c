@@ -26,9 +26,6 @@ char* realpath(const char* path, char* resolved_path);
 
 #define NSEC_IN_SEC 1000000000
 
-// Assume Linux scheduler will normally interrupt the enclave each 4 ms, or 250 times per second
-#define MAX_DT (NSEC_IN_SEC / 250)
-
 static spinlock_t g_profile_lock = INIT_SPINLOCK_UNLOCKED;
 static struct perf_data* g_perf_data = NULL;
 
