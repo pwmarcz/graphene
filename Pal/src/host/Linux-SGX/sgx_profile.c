@@ -210,23 +210,14 @@ void sgx_profile_sample(void* tcs) {
     }
 }
 
-
-
-char *realpath(const char *path, char *resolved_path);
-
 void sgx_profile_report_mmap(const char* filename, uint64_t addr, uint64_t len, uint64_t offset) {
     if (!g_profile_enabled)
-        return;
-
-    char buf[4096];
-    char* path = realpath(filename, buf);
-    if (!path)
         return;
 
     pid_t pid = g_pal_enclave.pal_sec.pid;
 
     spinlock_lock(&g_profile_lock);
-    int ret = pd_event_mmap(g_perf_data, path, pid, addr, len, offset);
+    int ret = pd_event_mmap(g_perf_data, filename, pid, addr, len, offset);
     spinlock_unlock(&g_profile_lock);
     if (IS_ERR(ret))
         SGX_DBG(DBG_E, "sgx_profile_report_mmap: pd_event_mmap failed: %d\n", ERRNO(ret));
