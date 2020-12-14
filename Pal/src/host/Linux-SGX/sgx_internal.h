@@ -165,6 +165,9 @@ struct perf_data* pd_open(const char* file_name, bool with_stack);
 /* Finalize and close; returns resulting file size */
 ssize_t pd_close(struct perf_data* pd);
 
+/* Write PERF_RECORD_COMM (report command name) */
+int pd_event_command(struct perf_data* pd, const char* command, uint32_t pid, uint32_t tid);
+
 /* Write PERF_RECORD_MMAP (report mmap of executable region) */
 int pd_event_mmap(struct perf_data* pd, const char* filename, uint32_t pid, uint64_t addr,
                   uint64_t len, uint64_t pgoff);

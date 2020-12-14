@@ -279,6 +279,32 @@ out:
     return ret;
 }
 
+int pd_event_command(struct perf_data* pd, const char* command, uint32_t pid, uint32_t tid) {
+    size_t command_size = strlen(command) + 1;
+    struct {
+        struct perf_event_header header;
+
+        uint32_t pid, tid;
+    } event = {
+        .header = {
+            .type = PERF_RECORD_COMM,
+            .misc = 0,
+            .size = sizeof(event) + command_size,
+        },
+
+        .pid = pid,
+        .tid = tid,
+    };
+    int ret;
+    ret = pd_write(pd, &event, sizeof(event));
+    if (ret < 0)
+        return ret;
+    ret = pd_write(pd, command, command_size);
+    if (ret < 0)
+        return ret;
+    return 0;
+}
+
 int pd_event_mmap(struct perf_data* pd, const char* filename, uint32_t pid, uint64_t addr,
                   uint64_t len, uint64_t pgoff) {
     size_t filename_size = strlen(filename) + 1;

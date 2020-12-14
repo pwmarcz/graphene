@@ -125,6 +125,15 @@ int sgx_profile_init(const char* filename, bool with_stack, uint64_t frequency) 
         goto out;
     }
     g_perf_data = pd;
+
+    // Generate an initial "command" event, so that the threads have a common name in the report.
+    pid_t pid = g_pal_enclave.pal_sec.pid;
+    ret = pd_event_command(pd, "pal-sgx", pid, /*tid=*/pid);
+    if (!pd) {
+        SGX_DBG(DBG_E, "sgx_profile_init: reporting command failed: %d\n", ERRNO(ret));
+        goto out;
+    }
+
     g_profile_enabled = true;
     return 0;
 
@@ -137,8 +146,16 @@ out:
     if (g_mem_fd > 0) {
         int close_ret = INLINE_SYSCALL(close, 1, g_mem_fd);
         if (IS_ERR(close_ret))
-            SGX_DBG(DBG_E, "sgx_profile_init: closing /proc/self/mem failed: %d\n", ERRNO(ret));
+            SGX_DBG(DBG_E, "sgx_profile_init: closing /proc/self/mem failed: %d\n",
+                    ERRNO(close_ret));
         g_mem_fd = -1;
+    }
+
+    if (g_perf_data) {
+        int close_ret = pd_close(g_perf_data);
+        if (IS_ERR(close_ret))
+            SGX_DBG(DBG_E, "sgx_profile_init: pd_close failed: %d\n", ERRNO(close_ret));
+            g_perf_data = NULL;
     }
     return ret;
 }
