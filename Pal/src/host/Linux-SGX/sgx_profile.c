@@ -167,6 +167,8 @@ void sgx_profile_finish(void) {
     if (!g_profile_enabled)
         return;
 
+    spinlock_lock(&g_profile_lock);
+
     size = pd_close(g_perf_data);
     if (IS_ERR(size))
         SGX_DBG(DBG_E, "sgx_profile_finish: pd_close failed: %d\n", ERRNO((int)size));
@@ -183,6 +185,8 @@ void sgx_profile_finish(void) {
     g_profile_filename = NULL;
 
     g_profile_enabled = false;
+
+    spinlock_unlock(&g_profile_lock);
 }
 
 static void sample_simple(void* tcs, pid_t pid, pid_t tid) {
@@ -224,7 +228,8 @@ static void sample_stack(void* tcs, pid_t pid, pid_t tid) {
     stack_size = ret;
 
     spinlock_lock(&g_profile_lock);
-    ret = pd_event_sample_stack(g_perf_data, gpr.rip, pid, tid, g_profile_period, &gpr, stack, stack_size);
+    ret = pd_event_sample_stack(g_perf_data, gpr.rip, pid, tid, g_profile_period,
+                                &gpr, stack, stack_size);
     spinlock_unlock(&g_profile_lock);
 
     if (IS_ERR(ret)) {
