@@ -494,8 +494,11 @@ make the output file much bigger, and slow down the process.
 
 ::
 
-    sgx.profile.period_ms = [INTEGER]
-    (Default: 20)
+    sgx.profile.frequency = [INTEGER]
+    (Default: 50)
 
-This syntax specifies approximate sampling period, in milliseconds. Higher
-values will mean less accurate results, but also lower overhead.
+This syntax specifies approximate frequency at which profiling samples are
+taken. Lower values will mean less accurate results, but also lower overhead.
+
+Note that the accuracy is limited by how often the process is interrupted by
+Linux scheduler: the effective maximum is 250 samples per second.

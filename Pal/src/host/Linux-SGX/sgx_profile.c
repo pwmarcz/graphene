@@ -21,14 +21,16 @@
 #include "string.h"
 
 #define NSEC_IN_SEC 1000000000
-#define NSEC_IN_MSEC 1000000
+
+// Assume Linux scheduler will normally interrupt the enclave each 4 ms, or 250 times per second
+#define MAX_DT (NSEC_IN_SEC / 250)
 
 static spinlock_t g_profile_lock = INIT_SPINLOCK_UNLOCKED;
 static struct perf_data* g_perf_data = NULL;
 
 static bool g_profile_enabled = false;
 static bool g_profile_with_stack;
-static uint64_t g_profile_period_ns;
+static uint64_t g_profile_period;
 static char* g_profile_filename = NULL;
 static int g_mem_fd = -1;
 
@@ -88,7 +90,7 @@ static int get_sgx_gpr(sgx_pal_gpr_t* gpr, void* tcs) {
     return 0;
 }
 
-int sgx_profile_init(const char* filename, bool with_stack, uint64_t period_ms) {
+int sgx_profile_init(const char* filename, bool with_stack, uint64_t frequency) {
     int ret;
 
     assert(!g_profile_enabled);
@@ -96,7 +98,7 @@ int sgx_profile_init(const char* filename, bool with_stack, uint64_t period_ms) 
     assert(!g_perf_data);
 
     g_profile_with_stack = with_stack;
-    g_profile_period_ns = period_ms * NSEC_IN_MSEC;
+    g_profile_period = NSEC_IN_SEC / frequency;
 
     g_profile_filename = strdup(filename);
     if (!g_profile_filename) {
@@ -173,7 +175,7 @@ static void sample_simple(void* tcs, pid_t pid, pid_t tid) {
     }
 
     spinlock_lock(&g_profile_lock);
-    ret = pd_event_sample_simple(g_perf_data, gpr.rip, pid, tid, g_profile_period_ns);
+    ret = pd_event_sample_simple(g_perf_data, gpr.rip, pid, tid, g_profile_period);
     spinlock_unlock(&g_profile_lock);
 
     if (IS_ERR(ret)) {
@@ -201,7 +203,7 @@ static void sample_stack(void* tcs, pid_t pid, pid_t tid) {
     stack_size = ret;
 
     spinlock_lock(&g_profile_lock);
-    ret = pd_event_sample_stack(g_perf_data, gpr.rip, pid, tid, g_profile_period_ns, &gpr, stack, stack_size);
+    ret = pd_event_sample_stack(g_perf_data, gpr.rip, pid, tid, g_profile_period, &gpr, stack, stack_size);
     spinlock_unlock(&g_profile_lock);
 
     if (IS_ERR(ret)) {
@@ -241,7 +243,7 @@ void sgx_profile_sample(void* tcs) {
     }
 
     // Report a sample, if necessary
-    if (tcb->profile_sample_time - sample_time >= g_profile_period_ns) {
+    if (tcb->profile_sample_time - sample_time >= g_profile_period) {
         tcb->profile_sample_time = sample_time;
 
         pid_t pid = g_pal_enclave.pal_sec.pid;

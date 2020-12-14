@@ -351,7 +351,7 @@ static int initialize_enclave(struct pal_enclave* enclave, bool first_process) {
 #ifdef DEBUG
     bool enable_profile = false;
     char profile_file_name[64] = "sgx-perf.data";
-    int64_t profile_period_ms;
+    int64_t profile_frequency;
     int64_t profile_with_stack;
 
     if (!profile_str || !strcmp(profile_str, "none")) {
@@ -378,10 +378,10 @@ static int initialize_enclave(struct pal_enclave* enclave, bool first_process) {
         goto out;
     }
 
-    ret = toml_int_in(enclave->manifest_root, "sgx.profile.period_ms", /*defaultval=*/20,
-                      &profile_period_ms);
-    if (ret < 0 || (profile_period_ms <= 0)) {
-        SGX_DBG(DBG_E, "Cannot parse \'sgx.profile.period_ms\' (the value must be a positive integer)\n");
+    ret = toml_int_in(enclave->manifest_root, "sgx.profile.frequency", /*defaultval=*/50,
+                      &profile_frequency);
+    if (ret < 0 || (profile_frequency <= 0)) {
+        SGX_DBG(DBG_E, "Cannot parse \'sgx.profile.frequency\' (the value must be a positive integer)\n");
         ret = -EINVAL;
         goto out;
     }
@@ -393,7 +393,7 @@ static int initialize_enclave(struct pal_enclave* enclave, bool first_process) {
             goto out;
         }
 
-        ret = sgx_profile_init(profile_file_name, profile_with_stack, profile_period_ms);
+        ret = sgx_profile_init(profile_file_name, profile_with_stack, profile_frequency);
         if (ret < 0)
             goto out;
     }
