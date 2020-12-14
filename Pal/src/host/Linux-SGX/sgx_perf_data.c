@@ -91,6 +91,8 @@ struct perf_data {
     // Assume last buf_pos bytes have not been written yet
     size_t buf_pos;
     uint8_t buf[BUF_SIZE];
+
+    bool with_stack;
 };
 
 static ssize_t write_all(int fd, const void* buf, size_t count) {
@@ -132,7 +134,7 @@ static int pd_write(struct perf_data* pd, const void* data, size_t size) {
     return 0;
 }
 
-struct perf_data* pd_open(const char* file_name) {
+struct perf_data* pd_open(const char* file_name, bool with_stack) {
     int ret;
 
     int fd = INLINE_SYSCALL(open, 3, file_name, O_WRONLY | O_TRUNC | O_CREAT, PERM_rw_r__r__);
@@ -158,6 +160,7 @@ struct perf_data* pd_open(const char* file_name) {
     pd->fd = fd;
     pd->file_pos = PROLOGUE_SIZE;
     pd->buf_pos = 0;
+    pd->with_stack = with_stack;
     return pd;
 
 out:
@@ -183,14 +186,16 @@ static int write_prologue_epilogue(struct perf_data* pd) {
     if (ret < 0)
         return ret;
 
+    // Determines the set of data in PERF_RECORD_SAMPLE
+    uint64_t sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_PERIOD;
+    if (pd->with_stack)
+        sample_type |= PERF_SAMPLE_CALLCHAIN | PERF_SAMPLE_REGS_USER | PERF_SAMPLE_STACK_USER;
+
     struct perf_file_attr attr = {
         .attr = {
             .type = PERF_TYPE_SOFTWARE,
             .size = sizeof(attr.attr),
-            // Determines the set of data in PERF_RECORD_SAMPLE (see pd_event_sample()).
-            .sample_type = (PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_PERIOD |
-                            PERF_SAMPLE_CALLCHAIN |
-                            PERF_SAMPLE_REGS_USER | PERF_SAMPLE_STACK_USER),
+            .sample_type = sample_type,
             .sample_regs_user = SAMPLE_REGS,
         },
         .ids = {0},
@@ -249,14 +254,18 @@ static int write_prologue_epilogue(struct perf_data* pd) {
     return 0;
 }
 
-int pd_close(struct perf_data* pd) {
-    int ret = 0;
+ssize_t pd_close(struct perf_data* pd) {
+    ssize_t ret = 0;
 
     ret = pd_flush(pd);
     if (ret < 0)
         goto out;
 
     ret = write_prologue_epilogue(pd);
+    if (ret < 0)
+        goto out;
+
+    ret = INLINE_SYSCALL(lseek, 3, pd->fd, 0, SEEK_CUR);
     if (ret < 0)
         goto out;
 
@@ -301,16 +310,41 @@ int pd_event_mmap(struct perf_data* pd, const char* filename, uint32_t pid, uint
     return 0;
 }
 
-int pd_event_sample(struct perf_data* pd, uint64_t ip, uint32_t pid,
-                    uint32_t tid, uint64_t period,
-                    sgx_pal_gpr_t* gpr, void* stack, size_t stack_size) {
+static int pd_event_sample(struct perf_data* pd, uint64_t ip, uint32_t pid, uint32_t tid,
+                         uint64_t period, size_t extra_size) {
     struct {
         struct perf_event_header header;
 
         uint64_t ip;
         uint32_t pid, tid;
         uint64_t period;
+    } event = {
+        .header = {
+            .type = PERF_RECORD_SAMPLE,
+            .misc = PERF_RECORD_MISC_USER, // user/kernel/hypervisor
+            .size = sizeof(event) + extra_size,
+        },
 
+        .ip = ip,
+        .pid = pid,
+        .tid = tid,
+        .period = period,
+    };
+
+    return pd_write(pd, &event, sizeof(event));
+}
+
+int pd_event_sample_simple(struct perf_data* pd, uint64_t ip, uint32_t pid, uint32_t tid,
+                           uint64_t period) {
+    assert(!pd->with_stack);
+    return pd_event_sample(pd, ip, pid, tid, period, /*extra_size=*/0);
+}
+
+int pd_event_sample_stack(struct perf_data* pd, uint64_t ip, uint32_t pid, uint32_t tid,
+                          uint64_t period, sgx_pal_gpr_t* gpr, void* stack, size_t stack_size) {
+    assert(pd->with_stack);
+    struct {
+        // Empty callchain section - needed so that perf will attempt to recover call chain
         struct {
             uint64_t nr;
         } callchain;
@@ -319,24 +353,7 @@ int pd_event_sample(struct perf_data* pd, uint64_t ip, uint32_t pid,
             uint64_t abi;
             uint64_t regs[NUM_SAMPLE_REGS];
         } regs;
-
-        struct {
-            uint64_t size;
-            uint8_t data[PD_STACK_SIZE];
-            uint64_t dyn_size;
-        } stack;
-    } event = {
-        .header = {
-            .type = PERF_RECORD_SAMPLE,
-            .misc = PERF_RECORD_MISC_USER, // user/kernel/hypervisor
-            .size = sizeof(event),
-        },
-
-        .ip = ip,
-        .pid = pid,
-        .tid = tid,
-        .period = period,
-
+    } extra = {
         .callchain = {
             .nr = 0,
         },
@@ -364,15 +381,31 @@ int pd_event_sample(struct perf_data* pd, uint64_t ip, uint32_t pid,
                 gpr->r15,
             },
         },
-        .stack = {
-            .size = PD_STACK_SIZE,
-            .dyn_size = stack_size,
-        },
     };
-    memcpy(&event.stack.data, stack, stack_size);
+    size_t extra_size = sizeof(extra) + stack_size + 2 * sizeof(uint64_t);
+    int ret;
 
-    int ret = pd_write(pd, &event, sizeof(event));
+    // Common section
+    ret = pd_event_sample(pd, ip, pid, tid, period, extra_size);
     if (ret < 0)
         return ret;
+
+    // Callchain and regs sections
+    ret = pd_write(pd, &extra, sizeof(extra));
+    if (ret < 0)
+        return ret;
+
+    // Stack section (variable length)
+    uint64_t size_field = stack_size;
+    ret = pd_write(pd, &size_field, sizeof(size_field));  // uint64_t size
+    if (ret < 0)
+        return ret;
+    ret = pd_write(pd, stack, stack_size);
+    if (ret < 0)
+        return ret;
+    ret = pd_write(pd, &size_field, sizeof(size_field));  // uint64_t dyn_size = size
+    if (ret < 0)
+        return ret;
+
     return 0;
 }

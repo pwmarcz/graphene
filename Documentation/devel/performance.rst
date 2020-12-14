@@ -515,20 +515,17 @@ enclave. Here is how to use it:
 
 #. Compile Graphene with ``SGX=1 DEBUG=1``.
 
-#. Make sure to install Python package ``pyelftools`` (e.g. ``sudo apt-get
-   install python-pyelftools``).
+#. Add ``sgx.profile.enable = "main"`` to manifest (to collect data for the main
+   process), or ``sgx.profile.enable = "all"`` (to collect data for all
+   processes).
 
-#. Add ``sgx.profile = "main"`` to manifest (to collect data for the main
-   process), or ``sgx.profile = "all"`` (to collect data for all processes).
+#. (Add ``sgx.profile.with_stack = 1`` for call chain information.)
 
-#. Run your application. It should say something like ``writing profile data to
-   sgx-profile.data`` on process exit (in case of ``sgx.profile = "all"``,
+#. Run your application. It should say something like ``Profile data written to
+   sgx-perf.data`` on process exit (in case of ``sgx.profile.enable = "all"``,
    multiple files will be written).
 
-#. Run ``profile-report``
-   (``Pal/src/host/Linux-SGX/tools/profile-report/profile-report``) with the
-   data file as parameter. It should display a table of functions (or raw
-   addresses, if symbol information is not available).
+#. Run ``perf report -i <data file>`` (see :ref:`perf` above).
 
 *Note*: The accuracy of this tool is unclear. The SGX profiling works by
 measuring the value of instruction pointer on each asynchronous enclave exit

@@ -148,7 +148,7 @@ int block_async_signals(bool block);
 void update_debugger(void);
 
 #ifdef DEBUG
-int sgx_profile_init(const char* filename);
+int sgx_profile_init(const char* filename, bool with_stack, uint64_t max_frequency);
 void sgx_profile_finish(void);
 void sgx_profile_sample(void* tcs);
 void sgx_profile_report_mmap(const char* filename, uint64_t addr, uint64_t len, uint64_t offset);
@@ -160,15 +160,21 @@ void sgx_profile_report_mmap(const char* filename, uint64_t addr, uint64_t len, 
 
 struct perf_data;
 
-struct perf_data* pd_open(const char* file_name);
-int pd_close(struct perf_data* pd);
+struct perf_data* pd_open(const char* file_name, bool with_stack);
+
+/* Finalize and close; returns resulting file size */
+ssize_t pd_close(struct perf_data* pd);
 
 /* Write PERF_RECORD_MMAP (report mmap of executable region) */
 int pd_event_mmap(struct perf_data* pd, const char* filename, uint32_t pid, uint64_t addr,
                   uint64_t len, uint64_t pgoff);
 
-/* Write PERF_RECORD_SAMPLE (instruction pointer and time period) */
-int pd_event_sample(struct perf_data* pd, uint64_t ip, uint32_t pid,
-                    uint32_t tid, uint64_t period, sgx_pal_gpr_t* gpr, void* stack, size_t stack_size);
+/* Write PERF_RECORD_SAMPLE (simple version) */
+int pd_event_sample_simple(struct perf_data* pd, uint64_t ip, uint32_t pid, uint32_t tid,
+                           uint64_t period);
+
+/* Write PERF_RECORD_SAMPLE (with stack sample, at most PD_STACK_SIZE bytes) */
+int pd_event_sample_stack(struct perf_data* pd,  uint64_t ip, uint32_t pid, uint32_t tid,
+                          uint64_t period, sgx_pal_gpr_t* gpr, void* stack, size_t stack_size);
 
 #endif

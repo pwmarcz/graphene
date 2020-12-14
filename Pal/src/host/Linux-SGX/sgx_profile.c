@@ -18,6 +18,7 @@
 #include "sgx_internal.h"
 #include "sgx_tls.h"
 #include "spinlock.h"
+#include "string.h"
 
 #define NSEC_IN_SEC 1000000000
 
@@ -27,7 +28,10 @@
 static spinlock_t g_profile_lock = INIT_SPINLOCK_UNLOCKED;
 static struct perf_data* g_perf_data = NULL;
 
-static int g_profile_enabled = false;
+static bool g_profile_enabled = false;
+static bool g_profile_with_stack;
+static uint64_t g_profile_period;
+static char* g_profile_filename = NULL;
 static int g_mem_fd = -1;
 
 /* Read memory from inside enclave (using /proc/self/mem). */
@@ -86,31 +90,46 @@ static int get_sgx_gpr(sgx_pal_gpr_t* gpr, void* tcs) {
     return 0;
 }
 
-int sgx_profile_init(const char* filename) {
+int sgx_profile_init(const char* filename, bool with_stack, uint64_t frequency) {
+    int ret;
+
     assert(!g_profile_enabled);
     assert(g_mem_fd == -1);
     assert(!g_perf_data);
 
-    int ret = INLINE_SYSCALL(open, 3, "/proc/self/mem", O_RDONLY | O_LARGEFILE, 0);
+    g_profile_with_stack = with_stack;
+    g_profile_period = NSEC_IN_SEC / frequency;
+
+    g_profile_filename = strdup(filename);
+    if (!g_profile_filename) {
+        SGX_DBG(DBG_E, "sgx_profile_init: out of memory\n");
+        ret = -ENOMEM;
+        goto out;
+    }
+
+    ret = INLINE_SYSCALL(open, 3, "/proc/self/mem", O_RDONLY | O_LARGEFILE, 0);
     if (IS_ERR(ret)) {
         SGX_DBG(DBG_E, "sgx_profile_init: opening /proc/self/mem failed: %d\n", ERRNO(ret));
         goto out;
     }
     g_mem_fd = ret;
 
-    struct perf_data* pd = pd_open(filename);
+    struct perf_data* pd = pd_open(filename, with_stack);
     if (!pd) {
         SGX_DBG(DBG_E, "sgx_profile_init: pd_open failed\n");
         ret = -EINVAL;
         goto out;
     }
     g_perf_data = pd;
-
-    SGX_DBG(DBG_I, "Writing profile data to %s\n", filename);
     g_profile_enabled = true;
     return 0;
 
 out:
+    if (g_profile_filename) {
+        free(g_profile_filename);
+        g_profile_filename = NULL;
+    }
+
     if (g_mem_fd > 0) {
         int close_ret = INLINE_SYSCALL(close, 1, g_mem_fd);
         if (IS_ERR(close_ret))
@@ -122,13 +141,14 @@ out:
 
 void sgx_profile_finish(void) {
     int ret;
+    ssize_t size;
 
     if (!g_profile_enabled)
         return;
 
-    ret = pd_close(g_perf_data);
-    if (IS_ERR(ret))
-        SGX_DBG(DBG_E, "sgx_profile_finish: pd_close failed: %d\n", ERRNO(ret));
+    size = pd_close(g_perf_data);
+    if (IS_ERR(size))
+        SGX_DBG(DBG_E, "sgx_profile_finish: pd_close failed: %d\n", ERRNO((int)size));
     g_perf_data = NULL;
 
     ret = INLINE_SYSCALL(close, 1, g_mem_fd);
@@ -136,38 +156,74 @@ void sgx_profile_finish(void) {
         SGX_DBG(DBG_E, "sgx_profile_finish: closing /proc/self/mem failed: %d\n", ERRNO(ret));
     g_mem_fd = -1;
 
+    SGX_DBG(DBG_I, "Profile data written to %s (%lu bytes)\n", g_profile_filename, size);
+
+    free(g_profile_filename);
+    g_profile_filename = NULL;
+
     g_profile_enabled = false;
+}
+
+static void sample_simple(void* tcs, pid_t pid, pid_t tid) {
+    int ret;
+    sgx_pal_gpr_t gpr;
+
+    ret = get_sgx_gpr(&gpr, tcs);
+    if (IS_ERR(ret)) {
+        SGX_DBG(DBG_E, "error reading GPR: %d\n", ERRNO(ret));
+        return;
+    }
+
+    spinlock_lock(&g_profile_lock);
+    ret = pd_event_sample_simple(g_perf_data, gpr.rip, pid, tid, g_profile_period);
+    spinlock_unlock(&g_profile_lock);
+
+    if (IS_ERR(ret)) {
+        SGX_DBG(DBG_E, "error recording sample: %d\n", ERRNO(ret));
+    }
+}
+
+static void sample_stack(void* tcs, pid_t pid, pid_t tid) {
+    int ret;
+    sgx_pal_gpr_t gpr;
+
+    ret = get_sgx_gpr(&gpr, tcs);
+    if (IS_ERR(ret)) {
+        SGX_DBG(DBG_E, "error reading GPR: %d\n", ERRNO(ret));
+        return;
+    }
+
+    uint8_t stack[PD_STACK_SIZE];
+    size_t stack_size;
+    ret = debug_read(stack, (void*)gpr.rsp, sizeof(stack));
+    if (IS_ERR(ret)) {
+        SGX_DBG(DBG_E, "error reading stack: %d\n", ERRNO(ret));
+        return;
+    }
+    stack_size = ret;
+
+    spinlock_lock(&g_profile_lock);
+    ret = pd_event_sample_stack(g_perf_data, gpr.rip, pid, tid, g_profile_period, &gpr, stack, stack_size);
+    spinlock_unlock(&g_profile_lock);
+
+    if (IS_ERR(ret)) {
+        SGX_DBG(DBG_E, "error recording sample: %d\n", ERRNO(ret));
+    }
 }
 
 /*
  * Take a sample after an exit from enclave.
  *
- * Note that this uses thread CPU time for period. This is because we cannot assume a fixed sampling
- * period (unlike e.g. perf-record). While at least one AEX event should happen every 4 ms (default
- * timer interrupt on modern Linux); AEX events will happen on other interrupts/exceptions as well,
- * such as page faults. Weighing the samples by elapsed time makes sure that we do not inflate the
- * count if AEX events happen more often.
+ * Use CPU time to record a sample approximately every 'g_profile_period' nanoseconds. Note that we
+ * rely on Linux scheduler to generate an AEX event 250 times per second (although other events may
+ * cause an AEX to happen more often), so sampling frequency greater than 250 cannot be reliably
+ * achieved.
  */
 void sgx_profile_sample(void* tcs) {
     int ret;
 
     if (!g_profile_enabled)
         return;
-
-    sgx_pal_gpr_t gpr;
-    ret = get_sgx_gpr(&gpr, tcs);
-    if (IS_ERR(ret)) {
-        SGX_DBG(DBG_E, "sgx_profile_sample: error reading GPR: %d\n", ERRNO(ret));
-        return;
-    }
-    uint8_t stack[PD_STACK_SIZE];
-    size_t stack_size;
-    ret = debug_read(stack, (void*)gpr.rsp, sizeof(stack));
-    if (IS_ERR(ret)) {
-        SGX_DBG(DBG_E, "sgx_profile_sample: error reading stack: %d\n", ERRNO(ret));
-        return;
-    }
-    stack_size = ret;
 
     // Check current CPU time
     struct timespec ts;
@@ -180,21 +236,16 @@ void sgx_profile_sample(void* tcs) {
     uint64_t sample_time = ts.tv_sec * NSEC_IN_SEC + ts.tv_nsec;
 
     // Compare and update last recorded time per thread
-    uint64_t period = 0;
     PAL_TCB_URTS* tcb = get_tcb_urts();
-    if (tcb->profile_sample_time > 0) {
-        assert(sample_time >= tcb->profile_sample_time);
-        period = sample_time - tcb->profile_sample_time;
-
-        // Assume that time spent on one sample is never longer than MAX_DT nanoseconds, because of
-        // Linux timer interrupt.
-        if (period > MAX_DT)
-            period = MAX_DT;
+    if (tcb->profile_sample_time == 0) {
+        tcb->profile_sample_time = sample_time;
+        return;
     }
-    tcb->profile_sample_time = sample_time;
 
     // Report a sample, if necessary
-    if (period > 0) {
+    if (tcb->profile_sample_time - sample_time >= g_profile_period) {
+        tcb->profile_sample_time = sample_time;
+
         pid_t pid = g_pal_enclave.pal_sec.pid;
         pid_t tid = get_tid_from_tcs(tcs);
         if (IS_ERR(ret)) {
@@ -202,11 +253,10 @@ void sgx_profile_sample(void* tcs) {
             tid = pid;
         }
 
-        spinlock_lock(&g_profile_lock);
-        ret = pd_event_sample(g_perf_data, gpr.rip, pid, tid, period, &gpr, stack, stack_size);
-        spinlock_unlock(&g_profile_lock);
-        if (IS_ERR(ret))
-            SGX_DBG(DBG_E, "sgx_profile_sample: pd_event_sample failed: %d\n", ERRNO(ret));
+        if (g_profile_with_stack)
+            sample_stack(tcs, pid, tid);
+        else
+            sample_simple(tcs, pid, tid);
     }
 }
 

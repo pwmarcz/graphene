@@ -342,7 +342,7 @@ static int initialize_enclave(struct pal_enclave* enclave, bool first_process) {
     enclave->pal_sec.enclave_attributes = enclave_token.body.attributes;
 
     char* profile_str = NULL;
-    ret = toml_string_in(enclave->manifest_root, "sgx.profile", &profile_str);
+    ret = toml_string_in(enclave->manifest_root, "sgx.profile.enable", &profile_str);
     if (ret < 0) {
         SGX_DBG(DBG_E, "Cannot parse \'sgx.profile\' (the value must be \"none\", \"main\" or \"all\")\n");
         ret = -EINVAL;
@@ -351,6 +351,8 @@ static int initialize_enclave(struct pal_enclave* enclave, bool first_process) {
 #ifdef DEBUG
     bool enable_profile = false;
     char profile_file_name[64] = "sgx-perf.data";
+    int64_t profile_frequency;
+    int64_t profile_with_stack;
 
     if (!profile_str || !strcmp(profile_str, "none")) {
         // do not enable
@@ -368,6 +370,22 @@ static int initialize_enclave(struct pal_enclave* enclave, bool first_process) {
         goto out;
     }
 
+    ret = toml_int_in(enclave->manifest_root, "sgx.profile.with_stack", /*defaultval=*/0,
+                      &profile_with_stack);
+    if (ret < 0 || (profile_with_stack != 0 && profile_with_stack != 1)) {
+        SGX_DBG(DBG_E, "Cannot parse \'sgx.profile.with_stack\' (the value must be 0 or 1)\n");
+        ret = -EINVAL;
+        goto out;
+    }
+
+    ret = toml_int_in(enclave->manifest_root, "sgx.profile.frequency", /*defaultval=*/50,
+                      &profile_frequency);
+    if (ret < 0 || (profile_frequency <= 0)) {
+        SGX_DBG(DBG_E, "Cannot parse \'sgx.profile.frequency\' (the value must be a positive integer)\n");
+        ret = -EINVAL;
+        goto out;
+    }
+
     if (enable_profile) {
         if (!(enclave->pal_sec.enclave_attributes.flags & SGX_FLAGS_DEBUG)) {
             SGX_DBG(DBG_E, "Cannot use \'sgx.profile\' with a production enclave\n");
@@ -375,7 +393,7 @@ static int initialize_enclave(struct pal_enclave* enclave, bool first_process) {
             goto out;
         }
 
-        ret = sgx_profile_init(profile_file_name);
+        ret = sgx_profile_init(profile_file_name, profile_with_stack, profile_frequency);
         if (ret < 0)
             goto out;
     }
