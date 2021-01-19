@@ -37,12 +37,6 @@ size_t g_pal_alloc_align;
 
 toml_table_t* g_manifest_root = NULL;
 
-/* The following constants will help matching glibc version with compatible
-   SHIM libraries */
-#include "glibc-version.h"
-
-const unsigned int glibc_version = GLIBC_VERSION;
-
 static void handle_failure(PAL_NUM arg, PAL_CONTEXT* context) {
     __UNUSED(context);
     if ((arg <= PAL_ERROR_NATIVE_COUNT) ||
@@ -453,7 +447,6 @@ noreturn void* shim_init(int argc, void* args) {
     shim_tcb_t* cur_tcb = shim_get_tcb();
 
     if (cur_tcb->context.regs) {
-        vdso_map_migrate();
         restore_child_context_after_clone(&cur_tcb->context);
         /* UNREACHABLE */
     }
