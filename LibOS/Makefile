@@ -51,6 +51,11 @@ ifeq ($(DEBUG),1)
 endif
 export GLIBC_CFLAGS
 
+# For LibOS entry API
+GLIBC_CPPFLAGS = -I$(abspath $(SHIM_DIR))/include -I$(abspath $(SHIM_DIR))/include/arch/$(ARCH)
+export GLIBC_CPPFLAGS
+GLIBC_DEPS = shim/include/arch/x86_64/shim_entry_api.h
+
 .PHONY: all
 all: $(GLIBC_TARGET) $(GLIBC_RUNTIME)
 	$(MAKE) -C $(SHIM_DIR) all
@@ -69,7 +74,8 @@ $(BUILD_DIR)/Makefile: $(GLIBC_SRC)/.configured
 	mkdir -p $(BUILD_DIR)
 	(cd $(BUILD_DIR) || exit 1; \
 	CC=gcc CXX=g++ AS=gcc \
-	CFLAGS=$$GLIBC_CFLAGS ../$(GLIBC_SRC)/configure --prefix=$(RUNTIME_DIR) \
+	CFLAGS=$$GLIBC_CFLAGS CPPFLAGS=$$GLIBC_CPPFLAGS \
+	../$(GLIBC_SRC)/configure --prefix=$(RUNTIME_DIR) \
 		--with-tls \
 		--without-selinux \
 		--disable-test \
@@ -88,8 +94,6 @@ GLIBC_PATCHES_2.31 = \
 	glibc-patches/hp-timing-2.31.patch
 
 GLIBC_PATCHES += $(GLIBC_PATCHES_$(GLIBC_VERSION))
-
-GLIBC_DEPS = shim/include/arch/x86_64/shim_entry_api.h
 
 .SECONDARY: $(GLIBC_SRC)/.configured
 $(GLIBC_SRC)/.configured: $(GLIBC_PATCHES) $(GLIBC_SRC).tar.gz $(GLIBC_DEPS)
@@ -131,6 +135,11 @@ GCC_LIBS = x86_64-pc-linux-gnu/libgomp/.libs/libgomp.so.1
 GCC_TARGET = $(addprefix $(GCC_BUILD_DIR)/, $(GCC_LIBS))
 GCC_RUNTIME = $(addprefix $(RUNTIME_DIR)/, $(notdir $(GCC_TARGET)))
 
+# For LibOS entry API
+GCC_CPPFLAGS = -I$(abspath $(SHIM_DIR))/include -I$(abspath $(SHIM_DIR))/include/arch/$(ARCH)
+export GCC_CPPFLAGS
+GCC_DEPS = shim/include/arch/x86_64/shim_entry_api.h
+
 .SECONDARY: $(GCC_BUILD_DIR)/Build.success
 
 $(GCC_BUILD_DIR)/Build.success: $(GCC_BUILD_DIR)/Makefile
@@ -143,6 +152,8 @@ $(GCC_BUILD_DIR)/Makefile: $(GCC_SRC)/.configured
 	mkdir -p $(GCC_BUILD_DIR)
 	(cd $(GCC_BUILD_DIR) || exit 1; \
 	unset CC CXX AS; \
+	CPPFLAGS=$$GCC_CPPFLAGS \
+	CPPFLAGS_FOR_TARGET=$$GCC_CPPFLAGS \
 	../$(GCC_SRC)/configure --prefix=$(RUNTIME_DIR) \
 		--enable-languages=c \
 		--disable-multilib \
@@ -152,8 +163,6 @@ $(foreach lib,$(GCC_TARGET),$(eval $(call LN_SF_TO_RUNTIME_DIR_template,$(lib)))
 
 GCC_PATCHES = \
 	gcc-patches/libgomp-replace-futex-instruction.patch
-
-GCC_DEPS = shim/include/arch/x86_64/shim_entry_api.h
 
 .SECONDARY: $(GCC_SRC)/.configured
 $(GCC_SRC)/.configured: $(GCC_PATCHES) $(GCC_SRC).tar.gz $(GCC_DEPS)
