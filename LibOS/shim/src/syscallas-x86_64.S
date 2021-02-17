@@ -151,23 +151,19 @@ syscalldb:
     and $~0xF, %rsp # Required by System V AMD64 ABI.
     xor %ebp, %ebp
 
-#ifdef DEBUG
     # Pretend that this function (`syscalldb`) is called from somewhere inside a function called
     # `__morestack`. This is the only way to have a backtrace in GDB spanning from LibOS/Pal,
     # through `syscalldb` to the user application code/libc, because GDB does not handle switching
     # stacks in the middle of backtrace, unless the function doing it is called `__morestack`.
     # Thanks GDB!
-    # Technical details: we load an address somewhere inside `__morestack` (this cannot be the first
-    # instruction in there) into r14 (a callee-saved register) and mark it as holding old rip. This
-    # way GDB thinks `syscalldb` was called by `__morestack`. Inside `__morestack` we mark all
-    # registers as having the same value as in the previous frame (basically a no-op frame). Now GDB
-    # sees a backtrace: `user_function` -> `__morestack` -> `syscalldb`, with `__morestack` having
-    # the same stack value as `user_function` and `syscalldb` having the new stack value. This makes
-    # GDB happy and it prints correct backtrace across all these functions, which is what we are
-    # after with all this madness.
-    lea Lmorestack_for_gdb_bt(%rip), %r14
-    .cfi_register %rip, %r14
-#endif
+    # Technical details: we hard-code the address inside `__morestack` (this cannot be the first
+    # instruction in there) in CFI. This way GDB thinks `syscalldb` was called by `__morestack`.
+    # Inside `__morestack` we mark all registers as having the same value as in the previous frame
+    # (basically a no-op frame). Now GDB sees a backtrace: `user_function` -> `__morestack` ->
+    # `syscalldb`, with `__morestack` having the same stack value as `user_function` and `syscalldb`
+    # having the new stack value. This makes GDB happy and it prints correct backtrace across all
+    # these functions, which is what we are after with all this madness.
+    .cfi_val_encoded_addr %rip, 0, Lmorestack_for_gdb_bt
 
     mov %r15, %rdi
     call shim_emulate_syscall # this does not return
