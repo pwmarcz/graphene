@@ -61,8 +61,8 @@ enum {
     IPC_MSG_SYSV_SEMRET,
     IPC_MSG_SYNC_REQUEST_UPGRADE,
     IPC_MSG_SYNC_REQUEST_DOWNGRADE,
-    IPC_MSG_SYNC_UPGRADE,
-    IPC_MSG_SYNC_DOWNGRADE,
+    IPC_MSG_SYNC_CONFIRM_UPGRADE,
+    IPC_MSG_SYNC_CONFIRM_DOWNGRADE,
     IPC_MSG_CODE_BOUND,
 };
 
@@ -377,11 +377,11 @@ struct shim_ipc_sync_response {
     unsigned char data[];
 };
 
-int ipc_sync_upgrade_send(struct shim_ipc_port* port, uint64_t id, int state, size_t data_size,
-                          void* data);
-int ipc_sync_upgrade_callback(struct shim_ipc_msg* msg, struct shim_ipc_port* port);
-int ipc_sync_downgrade_send(uint64_t id, int state, size_t data_size, void* data);
-int ipc_sync_downgrade_callback(struct shim_ipc_msg* msg, struct shim_ipc_port* port);
+int ipc_sync_confirm_upgrade_send(struct shim_ipc_port* port, uint64_t id, int state,
+                                  size_t data_size, void* data);
+int ipc_sync_confirm_upgrade_callback(struct shim_ipc_msg* msg, struct shim_ipc_port* port);
+int ipc_sync_confirm_downgrade_send(uint64_t id, int state, size_t data_size, void* data);
+int ipc_sync_confirm_downgrade_callback(struct shim_ipc_msg* msg, struct shim_ipc_port* port);
 
 /* general-purpose routines */
 int init_ipc(void);

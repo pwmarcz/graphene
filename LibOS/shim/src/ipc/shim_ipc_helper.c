@@ -70,8 +70,8 @@ static ipc_callback ipc_callbacks[IPC_MSG_CODE_BOUND] = {
 
     [IPC_MSG_SYNC_REQUEST_UPGRADE]   = &ipc_sync_request_upgrade_callback,
     [IPC_MSG_SYNC_REQUEST_DOWNGRADE] = &ipc_sync_request_downgrade_callback,
-    [IPC_MSG_SYNC_UPGRADE]           = &ipc_sync_upgrade_callback,
-    [IPC_MSG_SYNC_DOWNGRADE]         = &ipc_sync_downgrade_callback,
+    [IPC_MSG_SYNC_CONFIRM_UPGRADE]   = &ipc_sync_confirm_upgrade_callback,
+    [IPC_MSG_SYNC_CONFIRM_DOWNGRADE] = &ipc_sync_confirm_downgrade_callback,
 };
 
 static int init_self_ipc_port(void) {

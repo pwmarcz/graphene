@@ -116,8 +116,8 @@ static int process_handle(struct server_handle* handle) {
         if (client->up_state == SYNC_STATE_SHARED && n_exclusive == 0) {
             /* Upgrade from INVALID to SHARED */
             assert(client->cur_state == SYNC_STATE_INVALID);
-            if ((ret = ipc_sync_upgrade_send(client->port, handle->id, SYNC_STATE_SHARED,
-                                             handle->data_size, handle->data)) < 0)
+            if ((ret = ipc_sync_confirm_upgrade_send(client->port, handle->id, SYNC_STATE_SHARED,
+                                                     handle->data_size, handle->data)) < 0)
                 return ret;
 
             client->cur_state = SYNC_STATE_SHARED;
@@ -127,8 +127,8 @@ static int process_handle(struct server_handle* handle) {
         } else if (client->up_state == SYNC_STATE_EXCLUSIVE && n_exclusive == 0 && n_shared == 0) {
             /* Upgrade from INVALID to EXCLUSIVE */
             assert(client->cur_state == SYNC_STATE_INVALID);
-            if ((ret = ipc_sync_upgrade_send(client->port, handle->id, SYNC_STATE_EXCLUSIVE,
-                                             handle->data_size, handle->data)) < 0)
+            if ((ret = ipc_sync_confirm_upgrade_send(client->port, handle->id, SYNC_STATE_EXCLUSIVE,
+                                                     handle->data_size, handle->data)) < 0)
                 return ret;
 
             client->cur_state = SYNC_STATE_EXCLUSIVE;
@@ -138,8 +138,8 @@ static int process_handle(struct server_handle* handle) {
         } else if (client->up_state == SYNC_STATE_EXCLUSIVE && n_exclusive == 0 && n_shared == 1
                    && client->cur_state == SYNC_STATE_SHARED) {
             /* Upgrade from SHARED to EXCLUSIVE */
-            if ((ret = ipc_sync_upgrade_send(client->port, handle->id, SYNC_STATE_EXCLUSIVE,
-                                             handle->data_size, handle->data) < 0))
+            if ((ret = ipc_sync_confirm_upgrade_send(client->port, handle->id, SYNC_STATE_EXCLUSIVE,
+                                                     handle->data_size, handle->data) < 0))
                 return ret;
 
             client->cur_state = SYNC_STATE_EXCLUSIVE;
@@ -213,8 +213,8 @@ int sync_server_handle_request_upgrade(struct shim_ipc_port* port, uint64_t id, 
     return 0;
 }
 
-int sync_server_handle_downgrade(struct shim_ipc_port* port, uint64_t id, int state,
-                                 size_t data_size, void* data) {
+int sync_server_handle_confirm_downgrade(struct shim_ipc_port* port, uint64_t id, int state,
+                                         size_t data_size, void* data) {
     assert(state == SYNC_STATE_INVALID || state == SYNC_STATE_SHARED);
 
     lock(&g_server_lock);

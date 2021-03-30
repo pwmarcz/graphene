@@ -66,17 +66,17 @@ int ipc_sync_request_downgrade_send(struct shim_ipc_port* port, uint64_t id, int
     return sync_request_send(port, IPC_MSG_SYNC_REQUEST_DOWNGRADE, id, state);
 }
 
-int ipc_sync_upgrade_send(struct shim_ipc_port* port, uint64_t id, int state, size_t data_size,
-                          void* data) {
-    log_trace("sync server: sending UPGRADE(0x%lx, %s)\n", id, sync_state_names[state]);
+int ipc_sync_confirm_upgrade_send(struct shim_ipc_port* port, uint64_t id, int state,
+                                  size_t data_size, void* data) {
+    log_trace("sync server: sending CONFIRM_UPGRADE(0x%lx, %s)\n", id, sync_state_names[state]);
 
-    return sync_response_send(port, IPC_MSG_SYNC_UPGRADE, id, state, data_size, data);
+    return sync_response_send(port, IPC_MSG_SYNC_CONFIRM_UPGRADE, id, state, data_size, data);
 }
 
-int ipc_sync_downgrade_send(uint64_t id, int state, size_t data_size, void* data) {
-    log_trace("sync client: sending DOWNGRADE(0x%lx, %s)\n", id, sync_state_names[state]);
+int ipc_sync_confirm_downgrade_send(uint64_t id, int state, size_t data_size, void* data) {
+    log_trace("sync client: sending CONFIRM_DOWNGRADE(0x%lx, %s)\n", id, sync_state_names[state]);
 
-    return sync_response_send(NULL, IPC_MSG_SYNC_DOWNGRADE, id, state, data_size, data);
+    return sync_response_send(NULL, IPC_MSG_SYNC_CONFIRM_DOWNGRADE, id, state, data_size, data);
 }
 
 int ipc_sync_request_upgrade_callback(struct shim_ipc_msg* msg, struct shim_ipc_port* port) {
@@ -96,20 +96,21 @@ int ipc_sync_request_downgrade_callback(struct shim_ipc_msg* msg, struct shim_ip
     return sync_client_handle_request_downgrade(msgin->id, msgin->state);
 }
 
-int ipc_sync_upgrade_callback(struct shim_ipc_msg* msg, struct shim_ipc_port* port) {
+int ipc_sync_confirm_upgrade_callback(struct shim_ipc_msg* msg, struct shim_ipc_port* port) {
     struct shim_ipc_sync_response* msgin = (void*)&msg->msg;
     __UNUSED(port);
 
-    log_trace("sync client: received UPGRADE(0x%lx, %s)\n", msgin->id,
+    log_trace("sync client: received CONFIRM_UPGRADE(0x%lx, %s)\n", msgin->id,
               sync_state_names[msgin->state]);
-    return sync_client_handle_upgrade(msgin->id, msgin->state, msgin->data_size, &msgin->data);
+    return sync_client_handle_confirm_upgrade(msgin->id, msgin->state, msgin->data_size,
+                                              &msgin->data);
 }
 
-int ipc_sync_downgrade_callback(struct shim_ipc_msg* msg, struct shim_ipc_port* port) {
+int ipc_sync_confirm_downgrade_callback(struct shim_ipc_msg* msg, struct shim_ipc_port* port) {
     struct shim_ipc_sync_response* msgin = (void*)&msg->msg;
 
-    log_trace("sync server: received DOWNGRADE(0x%lx, %s)\n", msgin->id,
+    log_trace("sync server: received CONFIRM_DOWNGRADE(0x%lx, %s)\n", msgin->id,
               sync_state_names[msgin->state]);
-    return sync_server_handle_downgrade(port, msgin->id, msgin->state, msgin->data_size,
-                                        &msgin->data);
+    return sync_server_handle_confirm_downgrade(port, msgin->id, msgin->state, msgin->data_size,
+                                                &msgin->data);
 }

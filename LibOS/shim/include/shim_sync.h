@@ -77,31 +77,34 @@
  *
  * - REQUEST_UPGRADE(id, state): The client requests access to a resource with given ID (in either
  *   SHARED or EXCLUSIVE) mode. The server will downgrade the handles for other clients (if that's
- *   necessary for fulfilling the request), and reply with UPGRADE once the resource can be used.
+ *   necessary for fulfilling the request), and reply with CONFIRM_UPGRADE once the resource can be
+ *   used.
  *
- * - DOWNGRADE(id, state, data_size, data): The client confirms downgrade of its own handle, and
- *   sends the latest data associated with it. This is usually a response to REQUEST_DOWNGRADE.
+ * - CONFIRM_DOWNGRADE(id, state, data_size, data): The client confirms downgrade of its own handle,
+ *   and sends the latest data associated with it. This is usually a response to REQUEST_DOWNGRADE,
+ *   but can be also done by the client when closing a handle.
  *
  * The server sends the following messages to the client:
  *
- * - UPGRADE(id, state, data_size, data): The server confirms upgrade of a handle to the client, and
- *   sends the last data associated with the handle. This is a response to REQUEST_UPGRADE.
+ * - CONFIRM_UPGRADE(id, state, data_size, data): The server confirms upgrade of a handle to the
+ *   client, and sends the last data associated with the handle. This is a response to
+ *   REQUEST_UPGRADE.
  *
  * - REQUEST_DOWNGRADE(id, state, data_size, data): The server requests the client to downgrade its
- *   handle. The client will reply with DOWNGRADE when ready.
+ *   handle. The client will reply with CONFIRM_DOWNGRADE when ready.
  *
  * Here is an example interaction:
  *
  *                                                        client1 state    client2 state
  *                                                        INVALID          INVALID
  *  1. client1 -> server: REQUEST_UPGRADE(123, SHARED)    .                .
- *  2. server -> client1: UPGRADE(123, SHARED)            SHARED           .
+ *  2. server -> client1: CONFIRM_UPGRADE(123, SHARED)    SHARED           .
  *  3. client2 -> server: REQUEST_UPGRADE(123, SHARED)    |                .
- *  4. server -> client2: UPGRADE(123, SHARED)            |                SHARED
+ *  4. server -> client2: CONFIRM_UPGRADE(123, SHARED)    |                SHARED
  *  5. client1 -> server: REQUEST_UPGRADE(123, EXCLUSIVE) |                |
  *  6. server -> client2: REQUEST_DOWNGRADE(123, INVALID) |                |
- *  7. client2 -> server: DOWNGRADE(123, INVALID)         |                INVALID
- *  8. server -> client1: UPGRADE(123, EXCLUSIVE)         EXCLUSIVE        .
+ *  7. client2 -> server: CONFIRM_DOWNGRADE(123, INVALID) |                INVALID
+ *  8. server -> client1: CONFIRM_UPGRADE(123, EXCLUSIVE) EXCLUSIVE        .
  *
  * In the above diagram, both clients request resource 123 in SHARED mode, and they hold SHARED
  * handles at the same time. Later, when the first client requests EXCLUSIVE access, the other
@@ -224,10 +227,10 @@ void sync_unlock(struct sync_handle* handle);
 struct shim_ipc_port;
 
 int sync_server_handle_request_upgrade(struct shim_ipc_port* port, uint64_t id, int state);
-int sync_server_handle_downgrade(struct shim_ipc_port* port, uint64_t id, int state,
-                                 size_t data_size, void* data);
+int sync_server_handle_confirm_downgrade(struct shim_ipc_port* port, uint64_t id, int state,
+                                         size_t data_size, void* data);
 
 int sync_client_handle_request_downgrade(uint64_t id, int state);
-int sync_client_handle_upgrade(uint64_t id, int state, size_t data_size, void* data);
+int sync_client_handle_confirm_upgrade(uint64_t id, int state, size_t data_size, void* data);
 
 #endif /* _SHIM_SYNC_H_ */

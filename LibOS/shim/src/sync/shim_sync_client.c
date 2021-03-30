@@ -56,9 +56,9 @@ static uint64_t sync_new_id(void) {
 static void sync_downgrade(struct sync_handle* handle) {
     assert(!handle->used);
     assert(handle->down_state != SYNC_STATE_NONE);
-    if (ipc_sync_downgrade_send(handle->id, handle->down_state,
-                                handle->data_size, handle->buf) < 0)
-        FATAL("sending DOWNGRADE");
+    if (ipc_sync_confirm_downgrade_send(handle->id, handle->down_state,
+                                        handle->data_size, handle->buf) < 0)
+        FATAL("sending CONFIRM_DOWNGRADE");
     handle->cur_state = handle->down_state;
     handle->down_state = SYNC_STATE_NONE;
 }
@@ -230,11 +230,11 @@ static struct sync_handle* find_handle(uint64_t id) {
     unlock_client();
 
     /*
-     * FIXME: This assert is not correct, it's possible that a server sends us an information about
+     * FIXME: This assert is not correct, it's possible that a server sends us an confirmation about
      * a handle that we already called sync_close() on. This can happen because while sync_close()
-     * sends DOWNGRADE, it does not wait for confirmation, so a race condition is possible where the
-     * server has not received the DOWNGRADE yet. To fix that properly, we need to change the
-     * cleanup logic.
+     * sends CONFIRM_DOWNGRADE, it does not wait for confirmation, so a race condition is possible
+     * where the server has not received the CONFIRM_DOWNGRADE yet. To fix that properly, we need to
+     * change the cleanup logic.
      */
     assert(handle);
     return handle;
@@ -255,7 +255,7 @@ int sync_client_handle_request_downgrade(uint64_t id, int state) {
     return 0;
 }
 
-int sync_client_handle_upgrade(uint64_t id, int state, size_t data_size, void* data) {
+int sync_client_handle_confirm_upgrade(uint64_t id, int state, size_t data_size, void* data) {
     assert(g_sync_enabled);
 
     struct sync_handle* handle = find_handle(id);
