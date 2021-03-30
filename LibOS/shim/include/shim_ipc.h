@@ -61,8 +61,10 @@ enum {
     IPC_MSG_SYSV_SEMRET,
     IPC_MSG_SYNC_REQUEST_UPGRADE,
     IPC_MSG_SYNC_REQUEST_DOWNGRADE,
+    IPC_MSG_SYNC_REQUEST_CLOSE,
     IPC_MSG_SYNC_CONFIRM_UPGRADE,
     IPC_MSG_SYNC_CONFIRM_DOWNGRADE,
+    IPC_MSG_SYNC_CONFIRM_CLOSE,
     IPC_MSG_CODE_BOUND,
 };
 
@@ -351,37 +353,21 @@ int ipc_sysv_semret_send(struct shim_ipc_port* port, IDTYPE dest, void* vals, si
 int ipc_sysv_semret_callback(struct shim_ipc_msg* msg, struct shim_ipc_port* port);
 
 /*
- * SYNC_REQUEST_UPGRADE (client -> IPC leader)
- * SYNC_REQUEST_DOWNGRADE (IPC leader -> client)
+ * SYNC_REQUEST_*, SYNC_CONFIRM_*
  */
 
-struct shim_ipc_sync_request {
-    uint64_t id;
-    int state;
-};
-
-int ipc_sync_request_upgrade_send(uint64_t id, int state);
-int ipc_sync_request_upgrade_callback(struct shim_ipc_msg* msg, struct shim_ipc_port* port);
-int ipc_sync_request_downgrade_send(struct shim_ipc_port* port, uint64_t id, int state);
-int ipc_sync_request_downgrade_callback(struct shim_ipc_msg* msg, struct shim_ipc_port* port);
-
-/*
- * SYNC_UPGRADE (IPC leader -> client)
- * SYNC_DOWNGRADE (client -> IPC leader)
- */
-
-struct shim_ipc_sync_response {
+struct shim_ipc_sync_msg {
     uint64_t id;
     int state;
     size_t data_size;
     unsigned char data[];
 };
 
-int ipc_sync_confirm_upgrade_send(struct shim_ipc_port* port, uint64_t id, int state,
-                                  size_t data_size, void* data);
-int ipc_sync_confirm_upgrade_callback(struct shim_ipc_msg* msg, struct shim_ipc_port* port);
-int ipc_sync_confirm_downgrade_send(uint64_t id, int state, size_t data_size, void* data);
-int ipc_sync_confirm_downgrade_callback(struct shim_ipc_msg* msg, struct shim_ipc_port* port);
+int ipc_sync_client_send(int code, uint64_t id, int state, size_t data_size, void* data);
+int ipc_sync_server_send(struct shim_ipc_port* port, int code, uint64_t id, int state,
+                         size_t data_size, void* data);
+int ipc_sync_client_callback(struct shim_ipc_msg* msg, struct shim_ipc_port* port);
+int ipc_sync_server_callback(struct shim_ipc_msg* msg, struct shim_ipc_port* port);
 
 /* general-purpose routines */
 int init_ipc(void);

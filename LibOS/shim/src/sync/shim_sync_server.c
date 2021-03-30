@@ -74,7 +74,7 @@ static struct server_handle* find_handle(uint64_t id) {
 }
 
 static struct server_handle_client* find_handle_client(struct server_handle* handle,
-                                                   struct shim_ipc_port* port) {
+                                                       struct shim_ipc_port* port) {
     struct server_handle_client* client;
     LISTP_FOR_EACH_ENTRY(client, &handle->clients, list) {
         if (client->port == port)
@@ -90,6 +90,18 @@ static struct server_handle_client* find_handle_client(struct server_handle* han
 
     LISTP_ADD_TAIL(client, &handle->clients, list);
     return client;
+}
+
+static inline int confirm_upgrade(struct server_handle* handle, struct server_handle_client* client,
+                                  int state) {
+    return ipc_sync_server_send(client->port, IPC_MSG_SYNC_CONFIRM_UPGRADE, handle->id,
+                                state, handle->data_size, handle->data);
+}
+
+static inline int request_downgrade(struct server_handle* handle,
+                                    struct server_handle_client* client, int state) {
+    return ipc_sync_server_send(client->port, IPC_MSG_SYNC_REQUEST_DOWNGRADE, handle->id,
+                                state, /*data_size=*/0, /*data=*/NULL);
 }
 
 /* Process handle information after state change */
@@ -116,8 +128,7 @@ static int process_handle(struct server_handle* handle) {
         if (client->up_state == SYNC_STATE_SHARED && n_exclusive == 0) {
             /* Upgrade from INVALID to SHARED */
             assert(client->cur_state == SYNC_STATE_INVALID);
-            if ((ret = ipc_sync_confirm_upgrade_send(client->port, handle->id, SYNC_STATE_SHARED,
-                                                     handle->data_size, handle->data)) < 0)
+            if ((ret = confirm_upgrade(handle, client, SYNC_STATE_SHARED)) < 0)
                 return ret;
 
             client->cur_state = SYNC_STATE_SHARED;
@@ -127,8 +138,7 @@ static int process_handle(struct server_handle* handle) {
         } else if (client->up_state == SYNC_STATE_EXCLUSIVE && n_exclusive == 0 && n_shared == 0) {
             /* Upgrade from INVALID to EXCLUSIVE */
             assert(client->cur_state == SYNC_STATE_INVALID);
-            if ((ret = ipc_sync_confirm_upgrade_send(client->port, handle->id, SYNC_STATE_EXCLUSIVE,
-                                                     handle->data_size, handle->data)) < 0)
+            if ((ret = confirm_upgrade(handle, client, SYNC_STATE_EXCLUSIVE)) < 0)
                 return ret;
 
             client->cur_state = SYNC_STATE_EXCLUSIVE;
@@ -138,8 +148,7 @@ static int process_handle(struct server_handle* handle) {
         } else if (client->up_state == SYNC_STATE_EXCLUSIVE && n_exclusive == 0 && n_shared == 1
                    && client->cur_state == SYNC_STATE_SHARED) {
             /* Upgrade from SHARED to EXCLUSIVE */
-            if ((ret = ipc_sync_confirm_upgrade_send(client->port, handle->id, SYNC_STATE_EXCLUSIVE,
-                                                     handle->data_size, handle->data) < 0))
+            if ((ret = confirm_upgrade(handle, client, SYNC_STATE_EXCLUSIVE)) < 0)
                 return ret;
 
             client->cur_state = SYNC_STATE_EXCLUSIVE;
@@ -157,8 +166,7 @@ static int process_handle(struct server_handle* handle) {
         LISTP_FOR_EACH_ENTRY(client, &handle->clients, list) {
             if ((client->cur_state == SYNC_STATE_SHARED || client->cur_state == SYNC_STATE_EXCLUSIVE)
                     && client->down_state != SYNC_STATE_INVALID) {
-                if ((ret = ipc_sync_request_downgrade_send(client->port, handle->id,
-                                                           SYNC_STATE_INVALID)) < 0)
+                if ((ret = request_downgrade(handle, client, SYNC_STATE_INVALID)) < 0)
                     return ret;
                 client->down_state = SYNC_STATE_INVALID;
             }
@@ -169,8 +177,7 @@ static int process_handle(struct server_handle* handle) {
         LISTP_FOR_EACH_ENTRY(client, &handle->clients, list) {
             if (client->cur_state == SYNC_STATE_EXCLUSIVE && client->down_state != SYNC_STATE_SHARED
                     && client->down_state != SYNC_STATE_INVALID) {
-                if ((ret = ipc_sync_request_downgrade_send(client->port, handle->id,
-                                                           SYNC_STATE_SHARED)) < 0)
+                if ((ret = request_downgrade(handle, client, SYNC_STATE_SHARED)) < 0)
                     return ret;
                 client->down_state = SYNC_STATE_SHARED;
             }
@@ -180,7 +187,7 @@ static int process_handle(struct server_handle* handle) {
     return 0;
 }
 
-int sync_server_handle_request_upgrade(struct shim_ipc_port* port, uint64_t id, int state) {
+static void handle_request_upgrade(struct shim_ipc_port* port, uint64_t id, int state) {
     assert(state == SYNC_STATE_SHARED || state == SYNC_STATE_EXCLUSIVE);
 
     lock(&g_server_lock);
@@ -210,11 +217,10 @@ int sync_server_handle_request_upgrade(struct shim_ipc_port* port, uint64_t id, 
     }
 
     unlock(&g_server_lock);
-    return 0;
 }
 
-int sync_server_handle_confirm_downgrade(struct shim_ipc_port* port, uint64_t id, int state,
-                                         size_t data_size, void* data) {
+static void handle_confirm_downgrade(struct shim_ipc_port* port, uint64_t id, int state,
+                                     size_t data_size, void* data) {
     assert(state == SYNC_STATE_INVALID || state == SYNC_STATE_SHARED);
 
     lock(&g_server_lock);
@@ -249,5 +255,20 @@ int sync_server_handle_confirm_downgrade(struct shim_ipc_port* port, uint64_t id
         FATAL("Error messaging clients: %d\n", ret);
 
     unlock(&g_server_lock);
+}
+
+int sync_server_handle_message(struct shim_ipc_port* port, int code, uint64_t id, int state,
+                               size_t data_size, void* data) {
+    switch (code) {
+        case IPC_MSG_SYNC_REQUEST_UPGRADE:
+            assert(data_size == 0);
+            handle_request_upgrade(port, id, state);
+            break;
+        case IPC_MSG_SYNC_CONFIRM_DOWNGRADE:
+            handle_confirm_downgrade(port, id, state, data_size, data);
+            break;
+        default:
+            FATAL("unknown message: %d\n", code);
+    }
     return 0;
 }

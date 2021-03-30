@@ -56,8 +56,8 @@ static uint64_t sync_new_id(void) {
 static void sync_downgrade(struct sync_handle* handle) {
     assert(!handle->used);
     assert(handle->down_state != SYNC_STATE_NONE);
-    if (ipc_sync_confirm_downgrade_send(handle->id, handle->down_state,
-                                        handle->data_size, handle->buf) < 0)
+    if (ipc_sync_client_send(IPC_MSG_SYNC_CONFIRM_DOWNGRADE, handle->id, handle->down_state,
+                             handle->data_size, handle->buf) < 0)
         FATAL("sending CONFIRM_DOWNGRADE");
     handle->cur_state = handle->down_state;
     handle->down_state = SYNC_STATE_NONE;
@@ -178,7 +178,7 @@ void sync_close(struct sync_handle* handle) {
 }
 
 void sync_lock(struct sync_handle* handle, int state) {
-    assert (state == SYNC_STATE_SHARED || state == SYNC_STATE_EXCLUSIVE);
+    assert(state == SYNC_STATE_SHARED || state == SYNC_STATE_EXCLUSIVE);
 
     lock(&handle->use_lock);
     if (!g_sync_enabled)
@@ -190,7 +190,8 @@ void sync_lock(struct sync_handle* handle, int state) {
 
     while (handle->cur_state < state) {
         if (handle->up_state < state) {
-            if (ipc_sync_request_upgrade_send(handle->id, state))
+            if (ipc_sync_client_send(IPC_MSG_SYNC_REQUEST_UPGRADE, handle->id, state,
+                                     /*data_size=*/0, /*data=*/NULL) < 0)
                 FATAL("sending REQUEST_UPGRADE");
             handle->up_state = state;
         }
@@ -240,7 +241,7 @@ static struct sync_handle* find_handle(uint64_t id) {
     return handle;
 }
 
-int sync_client_handle_request_downgrade(uint64_t id, int state) {
+static void handle_request_downgrade(uint64_t id, int state) {
     assert(g_sync_enabled);
 
     struct sync_handle* handle = find_handle(id);
@@ -252,10 +253,9 @@ int sync_client_handle_request_downgrade(uint64_t id, int state) {
             sync_downgrade(handle);
     }
     unlock(&handle->prop_lock);
-    return 0;
 }
 
-int sync_client_handle_confirm_upgrade(uint64_t id, int state, size_t data_size, void* data) {
+static void handle_confirm_upgrade(uint64_t id, int state, size_t data_size, void* data) {
     assert(g_sync_enabled);
 
     struct sync_handle* handle = find_handle(id);
@@ -274,5 +274,20 @@ int sync_client_handle_confirm_upgrade(uint64_t id, int state, size_t data_size,
     memcpy(handle->buf, data, data_size);
 
     unlock(&handle->prop_lock);
+}
+
+int sync_client_handle_message(int code, uint64_t id, int state,
+                               size_t data_size, void* data) {
+    switch (code) {
+        case IPC_MSG_SYNC_REQUEST_DOWNGRADE:
+            assert(data_size == 0);
+            handle_request_downgrade(id, state);
+            break;
+        case IPC_MSG_SYNC_CONFIRM_UPGRADE:
+            handle_confirm_upgrade(id, state, data_size, data);
+            break;
+        default:
+            FATAL("unknown message: %d\n", code);
+    }
     return 0;
 }

@@ -68,10 +68,12 @@ static ipc_callback ipc_callbacks[IPC_MSG_CODE_BOUND] = {
     [IPC_MSG_SYSV_SEMCTL]   = &ipc_sysv_semctl_callback,
     [IPC_MSG_SYSV_SEMRET]   = &ipc_sysv_semret_callback,
 
-    [IPC_MSG_SYNC_REQUEST_UPGRADE]   = &ipc_sync_request_upgrade_callback,
-    [IPC_MSG_SYNC_REQUEST_DOWNGRADE] = &ipc_sync_request_downgrade_callback,
-    [IPC_MSG_SYNC_CONFIRM_UPGRADE]   = &ipc_sync_confirm_upgrade_callback,
-    [IPC_MSG_SYNC_CONFIRM_DOWNGRADE] = &ipc_sync_confirm_downgrade_callback,
+    [IPC_MSG_SYNC_REQUEST_UPGRADE]   = &ipc_sync_server_callback,
+    [IPC_MSG_SYNC_REQUEST_DOWNGRADE] = &ipc_sync_client_callback,
+    [IPC_MSG_SYNC_REQUEST_CLOSE]     = &ipc_sync_server_callback,
+    [IPC_MSG_SYNC_CONFIRM_UPGRADE]   = &ipc_sync_client_callback,
+    [IPC_MSG_SYNC_CONFIRM_DOWNGRADE] = &ipc_sync_server_callback,
+    [IPC_MSG_SYNC_CONFIRM_CLOSE]     = &ipc_sync_client_callback,
 };
 
 static int init_self_ipc_port(void) {
