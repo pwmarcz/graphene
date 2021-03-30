@@ -92,7 +92,7 @@
  *    once it's not used anymore (sending latest data associated with it).
  *
  * 3. Close:
- *    - client: REQUEST_CLOSE(id, data)
+ *    - client: REQUEST_CLOSE(id, cur_state, data)
  *    - server: CONFIRM_CLOSE(id)
  *
  *    The client informs that it has stopped using a handle, and (if the state was EXCLUSIVE) sends
@@ -153,6 +153,7 @@
 
 enum {
     SYNC_STATE_NONE = 0,
+    SYNC_STATE_CLOSED,
     SYNC_STATE_INVALID,
     SYNC_STATE_SHARED,
     SYNC_STATE_EXCLUSIVE,
@@ -185,12 +186,12 @@ struct sync_handle {
     /* Set to true if object is currently used (use_lock is locked). */
     bool used;
 
-    /* Current state (INVALID, SHARED or EXCLUSIVE); lower or equal to server's cur_state */
+    /* Current state, lower or equal to server's cur_state */
     int cur_state;
     /* Requested by client; always higher than cur_state, or NONE */
-    int up_state;
+    int client_req_state;
     /* Requested by server; always lower than cur_state, or NONE */
-    int down_state;
+    int server_req_state;
 };
 
 /*** User interface (sync_handle) ***/

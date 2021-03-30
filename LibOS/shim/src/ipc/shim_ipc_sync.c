@@ -15,7 +15,7 @@
 #include "shim_sync.h"
 
 static const char* sync_state_names[SYNC_STATE_NUM] = {
-    [SYNC_STATE_NONE]      = "none",
+    [SYNC_STATE_CLOSED]    = "closed",
     [SYNC_STATE_INVALID]   = "invalid",
     [SYNC_STATE_SHARED]    = "shared",
     [SYNC_STATE_EXCLUSIVE] = "exclusive",

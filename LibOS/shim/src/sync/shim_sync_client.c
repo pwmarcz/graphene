@@ -53,14 +53,30 @@ static uint64_t sync_new_id(void) {
     return id;
 }
 
+static void sync_wait(struct sync_handle* handle) {
+    handle->n_waiters++;
+    unlock(&handle->prop_lock);
+    if (object_wait_with_retry(handle->event) < 0)
+        FATAL("waiting for event");
+    lock(&handle->prop_lock);
+    if (--handle->n_waiters == 0)
+        DkEventClear(handle->event);
+}
+
+static void sync_notify(struct sync_handle* handle) {
+    if (handle->n_waiters > 0)
+        DkEventSet(handle->event);
+}
+
 static void sync_downgrade(struct sync_handle* handle) {
     assert(!handle->used);
-    assert(handle->down_state != SYNC_STATE_NONE);
-    if (ipc_sync_client_send(IPC_MSG_SYNC_CONFIRM_DOWNGRADE, handle->id, handle->down_state,
+    assert(handle->server_req_state != SYNC_STATE_NONE);
+    assert(handle->server_req_state < handle->cur_state);
+    if (ipc_sync_client_send(IPC_MSG_SYNC_CONFIRM_DOWNGRADE, handle->id, handle->server_req_state,
                              handle->data_size, handle->buf) < 0)
         FATAL("sending CONFIRM_DOWNGRADE");
-    handle->cur_state = handle->down_state;
-    handle->down_state = SYNC_STATE_NONE;
+    handle->cur_state = handle->server_req_state;
+    handle->server_req_state = SYNC_STATE_NONE;
 }
 
 int init_sync_client(void) {
@@ -114,9 +130,9 @@ int sync_open(struct sync_handle* handle, uint64_t id, size_t buf_size) {
 
     handle->n_waiters = 0;
 
-    handle->cur_state = SYNC_STATE_INVALID;
-    handle->up_state = SYNC_STATE_NONE;
-    handle->down_state = SYNC_STATE_NONE;
+    handle->cur_state = SYNC_STATE_CLOSED;
+    handle->client_req_state = SYNC_STATE_NONE;
+    handle->server_req_state = SYNC_STATE_NONE;
     handle->used = false;
 
     lock_client();
@@ -155,14 +171,22 @@ void sync_close(struct sync_handle* handle) {
 
     assert(!handle->used);
     assert(handle->n_waiters == 0);
-    assert(handle->up_state == SYNC_STATE_NONE);
 
     if (g_sync_enabled) {
-        /* Downgrade the handle to INVALID: make sure the server has latest data version, and
-         * doesn't ask us about the handle again. */
-        if (handle->cur_state != SYNC_STATE_INVALID) {
-            handle->down_state = SYNC_STATE_INVALID;
-            sync_downgrade(handle);
+        if (handle->cur_state != SYNC_STATE_CLOSED) {
+            size_t data_size;
+            if (handle->cur_state == SYNC_STATE_EXCLUSIVE) {
+                data_size = handle->data_size;
+            } else {
+                data_size = 0;
+            }
+
+            if (ipc_sync_client_send(IPC_MSG_SYNC_REQUEST_CLOSE, handle->id,
+                                     handle->cur_state, data_size, handle->buf) < 0) {
+                FATAL("sending REQUEST_CLOSE");
+            }
+            while (handle->cur_state != SYNC_STATE_CLOSED)
+                sync_wait(handle);
         }
     }
 
@@ -189,21 +213,13 @@ void sync_lock(struct sync_handle* handle, int state) {
     handle->used = true;
 
     while (handle->cur_state < state) {
-        if (handle->up_state < state) {
+        if (handle->client_req_state < state) {
             if (ipc_sync_client_send(IPC_MSG_SYNC_REQUEST_UPGRADE, handle->id, state,
                                      /*data_size=*/0, /*data=*/NULL) < 0)
                 FATAL("sending REQUEST_UPGRADE");
-            handle->up_state = state;
+            handle->client_req_state = state;
         }
-
-        handle->n_waiters++;
-        unlock(&handle->prop_lock);
-        if (object_wait_with_retry(handle->event) < 0)
-            FATAL("waiting for event");
-        DkSynchronizationObjectWait(handle->event, NO_TIMEOUT);
-        lock(&handle->prop_lock);
-        if (--handle->n_waiters == 0)
-            DkEventClear(handle->event);
+        sync_wait(handle);
     }
 
     unlock(&handle->prop_lock);
@@ -218,7 +234,7 @@ void sync_unlock(struct sync_handle* handle) {
     lock(&handle->prop_lock);
     assert(handle->used);
     handle->used = false;
-    if (handle->down_state != SYNC_STATE_NONE)
+    if (handle->server_req_state < handle->cur_state && handle->server_req_state != SYNC_STATE_NONE)
         sync_downgrade(handle);
     unlock(&handle->prop_lock);
     unlock(&handle->use_lock);
@@ -230,14 +246,8 @@ static struct sync_handle* find_handle(uint64_t id) {
     HASH_FIND(hh, g_client_handles, &id, sizeof(id), handle);
     unlock_client();
 
-    /*
-     * FIXME: This assert is not correct, it's possible that a server sends us an confirmation about
-     * a handle that we already called sync_close() on. This can happen because while sync_close()
-     * sends CONFIRM_DOWNGRADE, it does not wait for confirmation, so a race condition is possible
-     * where the server has not received the CONFIRM_DOWNGRADE yet. To fix that properly, we need to
-     * change the cleanup logic.
-     */
-    assert(handle);
+    if (!handle)
+        FATAL("message for unknown handle\n");
     return handle;
 }
 
@@ -246,9 +256,9 @@ static void handle_request_downgrade(uint64_t id, int state) {
 
     struct sync_handle* handle = find_handle(id);
     lock(&handle->prop_lock);
-    if (handle->cur_state > state && (handle->down_state > state
-                                      || handle->down_state == SYNC_STATE_NONE)) {
-        handle->down_state = state;
+    if (handle->cur_state > state && (handle->server_req_state > state
+                                      || handle->server_req_state == SYNC_STATE_NONE)) {
+        handle->server_req_state = state;
         if (!handle->used)
             sync_downgrade(handle);
     }
@@ -262,10 +272,8 @@ static void handle_confirm_upgrade(uint64_t id, int state, size_t data_size, voi
     lock(&handle->prop_lock);
     if (handle->cur_state < state) {
         handle->cur_state = state;
-        handle->up_state = SYNC_STATE_NONE;
-        /* Notify threads waiting for state change. */
-        if (handle->n_waiters > 0)
-            DkEventSet(handle->event);
+        handle->client_req_state = SYNC_STATE_NONE;
+        sync_notify(handle);
     }
 
     if (data_size > handle->buf_size)
@@ -273,6 +281,18 @@ static void handle_confirm_upgrade(uint64_t id, int state, size_t data_size, voi
     handle->data_size = data_size;
     memcpy(handle->buf, data, data_size);
 
+    unlock(&handle->prop_lock);
+}
+
+static void handle_confirm_close(uint64_t id) {
+    assert(g_sync_enabled);
+
+    struct sync_handle* handle = find_handle(id);
+    lock(&handle->prop_lock);
+    if (handle->cur_state != SYNC_STATE_CLOSED) {
+        handle->cur_state = SYNC_STATE_CLOSED;
+        sync_notify(handle);
+    }
     unlock(&handle->prop_lock);
 }
 
@@ -285,6 +305,9 @@ int sync_client_handle_message(int code, uint64_t id, int state,
             break;
         case IPC_MSG_SYNC_CONFIRM_UPGRADE:
             handle_confirm_upgrade(id, state, data_size, data);
+            break;
+        case IPC_MSG_SYNC_CONFIRM_CLOSE:
+            handle_confirm_close(id);
             break;
         default:
             FATAL("unknown message: %d\n", code);
