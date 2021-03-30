@@ -203,6 +203,9 @@ int init_sync_server(void);
  * and running. */
 int init_sync_client(void);
 
+/* Close all the handles. Has to be called before process exit. */
+int shutdown_sync_client(void);
+
 /* Initialize and register a sync handle. If `id` is 0, allocate a fresh handle ID.
  * Before calling sync_open() on given handle, handle->id must be set to 0, for easier lifecycle
  * tracking. */

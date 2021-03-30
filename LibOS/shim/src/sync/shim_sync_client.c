@@ -97,6 +97,11 @@ int init_sync_client(void) {
     return 0;
 }
 
+int shutdown_sync_client(void) {
+    log_debug("Shutting down sync engine");
+    return 0;
+}
+
 int sync_open(struct sync_handle* handle, uint64_t id, size_t buf_size) {
     int ret;
 
