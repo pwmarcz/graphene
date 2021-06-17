@@ -31,7 +31,7 @@ int sys_node_load(struct shim_dentry* dent, char** data, size_t* size) {
 
     const char* name = qstrgetstr(&dent->name);
     PAL_NUMA_TOPO_INFO* numa_topology = &g_pal_control->topo_info.numa_topology[node_num];
-    const char* str;
+    const char* str = NULL;
     if (strcmp(name, "cpumap" ) == 0) {
         str = numa_topology->cpumap;
     } else if (strcmp(name, "distance") == 0) {
