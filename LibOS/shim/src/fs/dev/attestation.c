@@ -75,6 +75,11 @@ static void update_buffer(char* buffer, size_t max_size, const char* data, size_
  */
 static int user_report_data_save(struct shim_dentry* dent, const char* data, size_t size) {
     __UNUSED(dent);
+
+    int ret = init_attestation_struct_sizes();
+    if (ret < 0)
+        return ret;
+
     update_buffer(g_user_report_data, g_user_report_data_size, data, size);
     return 0;
 }
@@ -90,6 +95,11 @@ static int user_report_data_save(struct shim_dentry* dent, const char* data, siz
  */
 static int target_info_save(struct shim_dentry* dent, const char* data, size_t size) {
     __UNUSED(dent);
+
+    int ret = init_attestation_struct_sizes();
+    if (ret < 0)
+        return ret;
+
     update_buffer(g_target_info, g_target_info_size, data, size);
     return 0;
 }
@@ -106,9 +116,12 @@ static int target_info_save(struct shim_dentry* dent, const char* data, size_t s
 static int my_target_info_load(struct shim_dentry* dent, char** data, size_t* size) {
     __UNUSED(dent);
 
+    int ret = init_attestation_struct_sizes();
+    if (ret < 0)
+        return ret;
+
     char* user_report_data = NULL;
     char* target_info = NULL;
-    int ret;
 
     user_report_data = calloc(1, g_user_report_data_size);
     if (!user_report_data) {
@@ -122,14 +135,23 @@ static int my_target_info_load(struct shim_dentry* dent, char** data, size_t* si
         goto out;
     }
 
+    size_t user_report_data_size = g_user_report_data_size;
+    size_t target_info_size = g_target_info_size;
+    size_t report_size = g_report_size;
+
     /* below invocation returns this enclave's target info because we zeroed out (via calloc)
      * target_info: it's a hint to function to update target_info with this enclave's info */
-    ret = DkAttestationReport(user_report_data, &g_user_report_data_size, target_info,
-                              &g_target_info_size, /*report=*/NULL, &g_report_size);
+    ret = DkAttestationReport(user_report_data, &user_report_data_size, target_info,
+                              &target_info_size, /*report=*/NULL, &report_size);
     if (ret < 0) {
         ret = -EACCES;
         goto out;
     }
+
+    /* sanity checks: returned struct sizes must be the same as previously obtained ones */
+    assert(user_report_data_size == g_user_report_data_size);
+    assert(target_info_size == g_target_info_size);
+    assert(report_size == g_report_size);
 
     ret = 0;
 
@@ -159,12 +181,16 @@ out:
 static int report_load(struct shim_dentry* dent, char** data, size_t* size) {
     __UNUSED(dent);
 
+    int ret = init_attestation_struct_sizes();
+    if (ret < 0)
+        return ret;
+
     char* report = calloc(1, g_report_size);
     if (!report)
         return -ENOMEM;
 
-    int ret = DkAttestationReport(&g_user_report_data, &g_user_report_data_size, &g_target_info,
-                              &g_target_info_size, report, &g_report_size);
+    ret = DkAttestationReport(&g_user_report_data, &g_user_report_data_size, &g_target_info,
+                                  &g_target_info_size, report, &g_report_size);
     if (ret < 0) {
         free(report);
         return -EACCES;
@@ -193,12 +219,16 @@ static int report_load(struct shim_dentry* dent, char** data, size_t* size) {
 static int quote_load(struct shim_dentry* dent, char** data, size_t* size) {
     __UNUSED(dent);
 
+    int ret = init_attestation_struct_sizes();
+    if (ret < 0)
+        return ret;
+
     size_t quote_size = QUOTE_MAX_SIZE;
     char* quote = calloc(1, quote_size);
     if (!quote)
         return -ENOMEM;
 
-    int ret = DkAttestationQuote(&g_user_report_data, g_user_report_data_size, quote, &quote_size);
+    ret = DkAttestationQuote(&g_user_report_data, g_user_report_data_size, quote, &quote_size);
     if (ret < 0) {
         free(quote);
         return -EACCES;
@@ -254,10 +284,6 @@ int init_attestation(struct pseudo_node* dev) {
         log_debug("host is not Linux-SGX, skipping /dev/attestation setup");
         return 0;
     }
-
-    int ret = init_attestation_struct_sizes();
-    if (ret < 0)
-        return ret;
 
     struct pseudo_node* attestation = pseudo_add_dir(dev, "attestation");
 
